@@ -1,10 +1,11 @@
-import os
-import requests
-import numpy as np
-from pathlib import Path
-from datetime import datetime, timedelta
-from PIL import Image
 import logging
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import numpy as np
+import requests
+from PIL import Image
 
 
 class ImageProcessor:
@@ -18,7 +19,7 @@ class ImageProcessor:
     
     def __init__(self,
                  image_path='',
-                 api_key: str = "sk-bcab316d69a7414faa9dc29737019333",
+                 api_key: str | None = None,
                  model_name: str = "wan2.6-i2v-flash",
                  local_proxy: str | None = None):
         """
@@ -147,6 +148,7 @@ class ImageProcessor:
             max_retries: 最大重试次数
         """
         import time
+
         import urllib3
         
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -290,7 +292,9 @@ class ImageProcessor:
             proxies=self._proxies(),
         )
         if response.status_code != 200:
-            raise Exception(f"Failed to get upload policy: {response.text}")
+            raise RuntimeError(
+                f"Failed to get DashScope upload policy (HTTP {response.status_code})"
+            )
         
         return response.json()['data']
     
@@ -332,7 +336,7 @@ class ImageProcessor:
                 proxies=self._proxies(),
             )
             if response.status_code != 200:
-                raise Exception(f"Failed to upload file: {response.text}")
+                raise RuntimeError(f"Failed to upload file (HTTP {response.status_code})")
         
         # Construct OSS URL correctly: oss://<bucket>/<key>
         # Extract bucket from upload_host (e.g., https://dashscope-instant.oss-cn-beijing.aliyuncs.com)
