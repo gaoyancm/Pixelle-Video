@@ -49,6 +49,28 @@ comfyui:
   # Note for Docker users: Use host.docker.internal:8188 (Mac/Windows) or host IP address (Linux)
   runninghub_api_key: ""  # RunningHub API key (required for runninghub workflows)
   runninghub_concurrent_limit: 1  # Concurrent execution limit for RunningHub (1-10, default 1 for regular members)
+
+  # Private GPU nodes. Keep disabled until the matching ComfyUI server is online.
+  # These loopback URLs are placeholders only; do not commit real IPs or credentials.
+  nodes:
+    - id: a800
+      name: "A800 Wan2.2 T2V"
+      base_url: "http://127.0.0.1:18188"
+      workflow_types:
+        - a800_wan22_t2v_33f
+        - a800_wan22_t2v_81f
+      enabled: false
+      timeout_seconds: 900
+      concurrency: 1
+    - id: gpu-4090
+      name: "RTX 4090 Wan2.1 I2V"
+      base_url: "http://127.0.0.1:28188"
+      workflow_types:
+        - gpu_4090_wan21_i2v_33f
+        - gpu_4090_wan21_i2v_81f
+      enabled: false
+      timeout_seconds: 600
+      concurrency: 1
   
   # TTS-specific configuration
   tts:

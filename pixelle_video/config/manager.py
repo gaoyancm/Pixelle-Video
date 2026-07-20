@@ -17,9 +17,11 @@ Provides unified access to configuration with automatic validation.
 """
 from pathlib import Path
 from typing import Any, Optional
+
 from loguru import logger
-from .schema import PixelleVideoConfig
+
 from .loader import load_config_dict, save_config_dict
+from .schema import PixelleVideoConfig
 
 
 class ConfigManager:
@@ -134,6 +136,7 @@ class ConfigManager:
             "runninghub_api_key": self.config.comfyui.runninghub_api_key,
             "runninghub_concurrent_limit": self.config.comfyui.runninghub_concurrent_limit,
             "runninghub_instance_type": self.config.comfyui.runninghub_instance_type,
+            "nodes": [node.model_dump() for node in self.config.comfyui.nodes],
             "tts": {
                 "default_workflow": self.config.comfyui.tts.default_workflow,
             },

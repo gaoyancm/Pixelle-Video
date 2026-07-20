@@ -29,9 +29,17 @@ Usage:
     if config_manager.validate():
         print("Config is valid!")
 """
-from .schema import PixelleVideoConfig, LLMConfig, ComfyUIConfig, TTSSubConfig, ImageSubConfig, VideoSubConfig
-from .manager import ConfigManager
 from .loader import load_config_dict, save_config_dict
+from .manager import ConfigManager
+from .schema import (
+    ComfyUIConfig,
+    ComfyUINodeConfig,
+    ImageSubConfig,
+    LLMConfig,
+    PixelleVideoConfig,
+    TTSSubConfig,
+    VideoSubConfig,
+)
 
 # Global singleton instance
 config_manager = ConfigManager()
@@ -40,6 +48,7 @@ __all__ = [
     "PixelleVideoConfig",
     "LLMConfig", 
     "ComfyUIConfig",
+    "ComfyUINodeConfig",
     "TTSSubConfig",
     "ImageSubConfig",
     "VideoSubConfig",
@@ -48,4 +57,3 @@ __all__ = [
     "load_config_dict",
     "save_config_dict",
 ]
-

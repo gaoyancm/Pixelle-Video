@@ -17,13 +17,17 @@ Supports both image and video generation workflows.
 Automatically detects output type based on ExecuteResult.
 """
 
+from pathlib import Path
 from typing import Optional
 
-from comfykit import ComfyKit
 from loguru import logger
 
-from pixelle_video.services.comfy_base_service import ComfyBaseService
 from pixelle_video.models.media import MediaResult
+from pixelle_video.services.comfy_base_service import ComfyBaseService
+from pixelle_video.services.comfyui_workflows import (
+    get_workflow_spec,
+    is_private_gpu_workflow,
+)
 
 
 class MediaService(ComfyBaseService):
@@ -71,8 +75,11 @@ class MediaService(ComfyBaseService):
         
         Override parent method to support multiple prefixes
         """
-        from pixelle_video.utils.os_util import list_resource_dirs, list_resource_files, get_resource_path
-        from pathlib import Path
+        from pixelle_video.utils.os_util import (
+            get_resource_path,
+            list_resource_dirs,
+            list_resource_files,
+        )
         
         workflows = []
         
@@ -227,6 +234,44 @@ class MediaService(ComfyBaseService):
 
         # 1. Resolve workflow (returns structured info)
         workflow_info = self._resolve_workflow(workflow=workflow)
+
+        # Phase-1 private GPU workflows use explicit node routing and node-id injection.
+        if is_private_gpu_workflow(workflow_info["key"]):
+            if not self.core or not getattr(self.core, "comfyui_adapter", None):
+                raise RuntimeError("Private ComfyUI adapter is not initialized")
+            spec = get_workflow_spec(workflow_info["key"])
+            frame_count = params.pop("frame_count", params.pop("length", None))
+            output_prefix = params.pop("output_prefix", None)
+            if params:
+                logger.debug(
+                    f"Ignoring unsupported private workflow parameters: {sorted(params)}"
+                )
+            outputs = await self.core.comfyui_adapter.execute(
+                spec.workflow_type,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image_path=image_path,
+                width=width,
+                height=height,
+                frame_count=frame_count,
+                seed=seed,
+                steps=steps,
+                cfg=cfg,
+                output_prefix=output_prefix,
+            )
+            if not outputs:
+                raise RuntimeError("Private ComfyUI workflow completed without output files")
+            video_extensions = {".gif", ".mkv", ".mov", ".mp4", ".webm"}
+            result = next(
+                (
+                    output
+                    for output in outputs
+                    if output.media_type.lower() in {"gifs", "videos"}
+                    or Path(output.filename).suffix.lower() in video_extensions
+                ),
+                outputs[0],
+            )
+            return MediaResult(media_type="video", url=result.url)
         
         # 2. Build workflow parameters (ComfyKit config is now managed by core)
         workflow_params = {"prompt": prompt}

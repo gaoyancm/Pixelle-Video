@@ -16,7 +16,8 @@ Configuration schema with Pydantic models
 Single source of truth for all configuration defaults and validation.
 """
 from typing import Optional
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class LLMConfig(BaseModel):
@@ -100,6 +101,35 @@ class VideoSubConfig(BaseModel):
     )
 
 
+class ComfyUINodeConfig(BaseModel):
+    """One routable private ComfyUI node."""
+
+    id: str = Field(description="Stable node identifier")
+    name: str = Field(description="Human-readable node name")
+    base_url: str = Field(description="ComfyUI base URL")
+    workflow_types: list[str] = Field(
+        default_factory=list, description="Workflow types accepted by this node"
+    )
+    enabled: bool = Field(default=False, description="Whether jobs may be routed here")
+    timeout_seconds: float = Field(default=600, gt=0, description="Job and HTTP timeout")
+    concurrency: int = Field(default=1, ge=1, description="Maximum in-flight jobs")
+
+    @field_validator("id", "name", "base_url")
+    @classmethod
+    def value_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
+
+    @field_validator("base_url")
+    @classmethod
+    def base_url_must_be_http(cls, value: str) -> str:
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("base_url must start with http:// or https://")
+        return value.rstrip("/")
+
+
 class ComfyUIConfig(BaseModel):
     """ComfyUI configuration (includes global settings and service-specific configs)"""
     comfyui_url: str = Field(default="http://127.0.0.1:8188", description="ComfyUI Server URL")
@@ -107,6 +137,9 @@ class ComfyUIConfig(BaseModel):
     runninghub_api_key: Optional[str] = Field(default=None, description="RunningHub API Key (optional)")
     runninghub_concurrent_limit: int = Field(default=1, ge=1, le=10, description="RunningHub concurrent execution limit (1-10)")
     runninghub_instance_type: Optional[str] = Field(default=None, description="RunningHub instance type (optional, set to 'plus' for 48GB VRAM)")
+    nodes: list[ComfyUINodeConfig] = Field(
+        default_factory=list, description="Private ComfyUI GPU nodes"
+    )
     tts: TTSSubConfig = Field(default_factory=TTSSubConfig, description="TTS-specific configuration")
     image: ImageSubConfig = Field(default_factory=ImageSubConfig, description="Image-specific configuration")
     video: VideoSubConfig = Field(default_factory=VideoSubConfig, description="Video-specific configuration")
