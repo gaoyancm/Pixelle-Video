@@ -70,6 +70,14 @@ site/
 data
 output
 
+# Phase 2 media-job SQLite files (kept explicit even though data/ is ignored)
+data/media_jobs.db
+data/media_jobs.db-wal
+data/media_jobs.db-shm
+data/media_jobs-test.db
+data/media_jobs-test.db-wal
+data/media_jobs-test.db-shm
+
 plans/
 examples/
 repositories/

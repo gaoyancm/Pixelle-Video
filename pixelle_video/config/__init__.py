@@ -36,6 +36,7 @@ from .schema import (
     ComfyUINodeConfig,
     ImageSubConfig,
     LLMConfig,
+    MediaJobsConfig,
     PixelleVideoConfig,
     TTSSubConfig,
     VideoSubConfig,
@@ -47,6 +48,7 @@ config_manager = ConfigManager()
 __all__ = [
     "PixelleVideoConfig",
     "LLMConfig", 
+    "MediaJobsConfig",
     "ComfyUIConfig",
     "ComfyUINodeConfig",
     "TTSSubConfig",

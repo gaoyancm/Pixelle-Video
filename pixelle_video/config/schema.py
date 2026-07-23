@@ -15,9 +15,9 @@ Configuration schema with Pydantic models
 
 Single source of truth for all configuration defaults and validation.
 """
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 
 class LLMConfig(BaseModel):
@@ -153,6 +153,55 @@ class TemplateConfig(BaseModel):
     )
 
 
+class MediaJobsConfig(BaseModel):
+    """Persistent media-job configuration.
+
+    Configuration is inert while ``enabled`` is false. Database engines and
+    files are created only by an explicit database initialization call.
+    """
+
+    enabled: bool = Field(default=False, description="Enable persistent media jobs")
+    database_url: str = Field(
+        default="sqlite+aiosqlite:///data/media_jobs.db",
+        description="SQLAlchemy async database URL",
+    )
+    worker_mode: Literal["external"] = Field(
+        default="external", description="Only an external worker is supported"
+    )
+    poll_interval_seconds: float = Field(default=2.0, gt=0)
+    lease_seconds: int = Field(default=60, ge=10)
+    heartbeat_seconds: int = Field(default=20, ge=1)
+    default_timeout_seconds: int = Field(default=900, gt=0)
+    private_comfyui_enabled: bool = Field(default=True)
+    legacy_providers_enabled: bool = Field(default=False)
+    managed_output_root: str = Field(default="output/media_jobs")
+    managed_asset_root: str = Field(default="data/media_assets")
+    _config_base_dir: str | None = PrivateAttr(default=None)
+
+    @property
+    def config_base_dir(self) -> str | None:
+        return self._config_base_dir
+
+    def set_config_base_dir(self, base_dir: str) -> None:
+        """Record the trusted directory containing the loaded config file."""
+
+        self._config_base_dir = base_dir
+
+    @field_validator("database_url", "managed_output_root", "managed_asset_root")
+    @classmethod
+    def value_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
+
+    @model_validator(mode="after")
+    def heartbeat_must_fit_inside_lease(self):
+        if self.heartbeat_seconds >= self.lease_seconds:
+            raise ValueError("heartbeat_seconds must be less than lease_seconds")
+        return self
+
+
 class PixelleVideoConfig(BaseModel):
     """Pixelle-Video main configuration"""
     project_name: str = Field(default="Pixelle-Video", description="Project name")
@@ -160,6 +209,7 @@ class PixelleVideoConfig(BaseModel):
     api_providers: APIProvidersConfig = Field(default_factory=APIProvidersConfig)
     comfyui: ComfyUIConfig = Field(default_factory=ComfyUIConfig)
     template: TemplateConfig = Field(default_factory=TemplateConfig)
+    media_jobs: MediaJobsConfig = Field(default_factory=MediaJobsConfig)
     
     def is_llm_configured(self) -> bool:
         """Check if LLM is properly configured"""

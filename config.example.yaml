@@ -4,6 +4,22 @@
 
 project_name: Pixelle-Video
 
+# ==================== Persistent Media Jobs ====================
+# Disabled by default. The SQLite URL and managed roots are project-relative
+# placeholders and contain no credentials or remote infrastructure details.
+media_jobs:
+  enabled: false
+  database_url: "sqlite+aiosqlite:///data/media_jobs.db"
+  worker_mode: external
+  poll_interval_seconds: 2.0
+  lease_seconds: 60
+  heartbeat_seconds: 20
+  default_timeout_seconds: 900
+  private_comfyui_enabled: true
+  legacy_providers_enabled: false
+  managed_output_root: "output/media_jobs"
+  managed_asset_root: "data/media_assets"
+
 # ==================== LLM Configuration ====================
 # Supports any OpenAI SDK compatible API
 llm:

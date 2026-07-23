@@ -50,6 +50,7 @@ class ConfigManager:
         """Load configuration from file"""
         data = load_config_dict(str(self.config_path))
         config = PixelleVideoConfig(**data)
+        config.media_jobs.set_config_base_dir(str(self.config_path.resolve().parent))
         
         # Validate template path exists
         self._validate_template(config.template.default_template)
@@ -153,6 +154,10 @@ class ConfigManager:
     def get_api_providers_config(self) -> dict:
         """Get direct API provider configuration as dict"""
         return self.config.api_providers.model_dump()
+
+    def get_media_jobs_config(self) -> dict:
+        """Get persistent media-job configuration without initializing a database."""
+        return self.config.media_jobs.model_dump()
 
     def set_api_provider_config(self, provider: str, updates: dict):
         """Set configuration for a direct API provider"""
