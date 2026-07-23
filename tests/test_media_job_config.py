@@ -22,6 +22,11 @@ def test_config_example_parses_and_media_jobs_are_disabled() -> None:
     assert config.media_jobs.enabled is False
     assert config.media_jobs.worker_mode == "external"
     assert config.media_jobs.database_url == "sqlite+aiosqlite:///data/media_jobs.db"
+    assert config.media_jobs.poll_interval_seconds == 2.0
+    assert config.media_jobs.history_poll_interval_seconds == 2.0
+    assert config.media_jobs.recovery_scan_interval_seconds == 10.0
+    assert config.media_jobs.lease_seconds == 60
+    assert config.media_jobs.heartbeat_seconds == 20
     assert config.media_jobs.private_comfyui_enabled is True
     assert config.media_jobs.legacy_providers_enabled is False
     assert config.media_jobs.managed_output_root == "output/media_jobs"

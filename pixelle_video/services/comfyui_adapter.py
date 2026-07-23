@@ -54,6 +54,15 @@ class ComfyUIOutput:
     url: str
 
 
+@dataclass(frozen=True)
+class PreparedComfyUISubmission:
+    """A validated workflow ready for the remote side-effecting POST /prompt."""
+
+    node_id: str
+    workflow_type: str
+    workflow: dict[str, Any]
+
+
 class ComfyUIAdapter:
     """Route workflows to configured nodes and speak the native ComfyUI API."""
 
@@ -192,24 +201,19 @@ class ComfyUIAdapter:
         steps: int | None = None,
         cfg: float | None = None,
         output_prefix: str | None = None,
+        submission_token: str | None = None,
     ) -> ComfyUIJob:
         """Inject and submit one workflow, respecting the node concurrency limit."""
 
         node = self.select_node(workflow_type)
-        spec = get_workflow_spec(workflow_type)
         semaphore = self._semaphores[node.id]
         await semaphore.acquire()
         try:
-            input_image = (
-                await self.upload_image(node, image_path)
-                if spec.requires_image and image_path is not None
-                else None
-            )
-            workflow = self.build_workflow(
+            prepared = await self.prepare_submission(
                 workflow_type,
                 prompt=prompt,
                 negative_prompt=negative_prompt,
-                input_image=input_image,
+                image_path=image_path,
                 width=width,
                 height=height,
                 frame_count=frame_count,
@@ -218,25 +222,86 @@ class ComfyUIAdapter:
                 cfg=cfg,
                 output_prefix=output_prefix,
             )
-            async with self._client(node) as client:
-                response = await client.post(
-                    "/prompt",
-                    json={"prompt": workflow, "client_id": uuid.uuid4().hex},
-                )
-            response.raise_for_status()
-            prompt_id = response.json().get("prompt_id")
-            if not prompt_id:
-                raise RuntimeError("ComfyUI submit response did not include prompt_id")
-            job = ComfyUIJob(
-                prompt_id=str(prompt_id),
-                node_id=node.id,
-                workflow_type=workflow_type,
+            job = await self.submit_prepared(
+                prepared,
+                submission_token=submission_token,
             )
             self._active_jobs.add((job.node_id, job.prompt_id))
             return job
         except BaseException:
             semaphore.release()
             raise
+
+    async def prepare_submission(
+        self,
+        workflow_type: str,
+        *,
+        prompt: str,
+        negative_prompt: str | None = None,
+        image_path: str | Path | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        frame_count: int | None = None,
+        seed: int | None = None,
+        steps: int | None = None,
+        cfg: float | None = None,
+        output_prefix: str | None = None,
+    ) -> PreparedComfyUISubmission:
+        """Build and validate a request without sending POST /prompt."""
+
+        node = self.select_node(workflow_type)
+        spec = get_workflow_spec(workflow_type)
+        input_image = (
+            await self.upload_image(node, image_path)
+            if spec.requires_image and image_path is not None
+            else None
+        )
+        workflow = self.build_workflow(
+            workflow_type,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            input_image=input_image,
+            width=width,
+            height=height,
+            frame_count=frame_count,
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            output_prefix=output_prefix,
+        )
+        return PreparedComfyUISubmission(
+            node_id=node.id,
+            workflow_type=workflow_type,
+            workflow=workflow,
+        )
+
+    async def submit_prepared(
+        self,
+        prepared: PreparedComfyUISubmission,
+        *,
+        submission_token: str | None = None,
+    ) -> ComfyUIJob:
+        """Perform the single remote side-effecting submission request."""
+
+        node = self._nodes[prepared.node_id]
+        client_id = submission_token or uuid.uuid4().hex
+        payload: dict[str, Any] = {
+            "prompt": prepared.workflow,
+            "client_id": client_id,
+        }
+        if submission_token is not None:
+            payload["extra_data"] = {"pixelle_submission_token": submission_token}
+        async with self._client(node) as client:
+            response = await client.post("/prompt", json=payload)
+        response.raise_for_status()
+        prompt_id = response.json().get("prompt_id")
+        if not prompt_id:
+            raise RuntimeError("ComfyUI submit response did not include prompt_id")
+        return ComfyUIJob(
+            prompt_id=str(prompt_id),
+            node_id=node.id,
+            workflow_type=prepared.workflow_type,
+        )
 
     async def query_status(self, job: ComfyUIJob) -> ComfyUIJobStatus:
         """Query history and queue data and return a normalized status."""
@@ -264,7 +329,9 @@ class ComfyUIAdapter:
             response = await client.get("/queue")
         response.raise_for_status()
         queue = response.json()
-        if self._queue_contains(queue.get("queue_running"), job.prompt_id):
+        if self._queue_contains(
+            queue.get("queue_running"), job.prompt_id
+        ) or self._queue_contains(queue.get("queue_pending"), job.prompt_id):
             return ComfyUIJobStatus(ComfyUIJobState.RUNNING)
         return ComfyUIJobStatus(ComfyUIJobState.QUEUED)
 
@@ -289,7 +356,9 @@ class ComfyUIAdapter:
                         continue
                     filename = str(item["filename"])
                     subfolder = str(item.get("subfolder") or "")
-                    storage_type = str(item.get("type") or "output")
+                    storage_type = (
+                        "output" if "type" not in item else str(item.get("type") or "")
+                    )
                     url = str(
                         httpx.URL(f"{node.base_url.rstrip('/')}/view").copy_merge_params(
                             {
@@ -311,6 +380,64 @@ class ComfyUIAdapter:
                     )
         self._release_job(job)
         return outputs
+
+    async def download_output(self, output: ComfyUIOutput) -> bytes:
+        """Download one reported output without inheriting environment proxies."""
+
+        try:
+            node = self._nodes[output.node_id]
+        except KeyError as error:
+            raise ValueError(f"Unknown ComfyUI node id '{output.node_id}'") from error
+        async with self._client(node) as client:
+            response = await client.get(
+                "/view",
+                params={
+                    "filename": output.filename,
+                    "subfolder": output.subfolder,
+                    "type": output.storage_type,
+                },
+            )
+        response.raise_for_status()
+        return response.content
+
+    async def find_prompt_ids_by_submission_token(
+        self,
+        node_id: str,
+        submission_token: str,
+    ) -> tuple[str, ...]:
+        """Return only prompt IDs with an explicit echoed token in queue/history."""
+
+        try:
+            node = self._nodes[node_id]
+        except KeyError as error:
+            raise ValueError(f"Unknown ComfyUI node id '{node_id}'") from error
+        async with self._client(node) as client:
+            queue_response = await client.get("/queue")
+            queue_response.raise_for_status()
+            history_response = await client.get("/history")
+            history_response.raise_for_status()
+        matches: set[str] = set()
+        queue = queue_response.json()
+        if isinstance(queue, dict):
+            for key in ("queue_running", "queue_pending"):
+                for item in queue.get(key) or []:
+                    prompt_id, extra_data = self._queue_item_identity(item)
+                    if prompt_id and self._token_matches(extra_data, submission_token):
+                        matches.add(prompt_id)
+        history = history_response.json()
+        if isinstance(history, dict):
+            for prompt_id, record in history.items():
+                if not isinstance(record, dict):
+                    continue
+                prompt_data = record.get("prompt")
+                extra_data = (
+                    prompt_data[3]
+                    if isinstance(prompt_data, list) and len(prompt_data) > 3
+                    else record.get("extra_data")
+                )
+                if self._token_matches(extra_data, submission_token):
+                    matches.add(str(prompt_id))
+        return tuple(sorted(matches))
 
     async def execute(
         self,
@@ -369,6 +496,19 @@ class ComfyUIAdapter:
         return any(
             isinstance(item, list) and len(item) > 1 and str(item[1]) == prompt_id
             for item in queue_items
+        )
+
+    @staticmethod
+    def _queue_item_identity(item: Any) -> tuple[str | None, Any]:
+        if not isinstance(item, list) or len(item) < 2:
+            return None, None
+        return str(item[1]), item[3] if len(item) > 3 else None
+
+    @staticmethod
+    def _token_matches(extra_data: Any, submission_token: str) -> bool:
+        return (
+            isinstance(extra_data, dict)
+            and extra_data.get("pixelle_submission_token") == submission_token
         )
 
     def _release_job(self, job: ComfyUIJob) -> None:

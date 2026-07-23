@@ -169,6 +169,8 @@ class MediaJobsConfig(BaseModel):
         default="external", description="Only an external worker is supported"
     )
     poll_interval_seconds: float = Field(default=2.0, gt=0)
+    history_poll_interval_seconds: float = Field(default=2.0, gt=0)
+    recovery_scan_interval_seconds: float = Field(default=10.0, gt=0)
     lease_seconds: int = Field(default=60, ge=10)
     heartbeat_seconds: int = Field(default=20, ge=1)
     default_timeout_seconds: int = Field(default=900, gt=0)

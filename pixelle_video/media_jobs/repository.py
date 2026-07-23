@@ -149,6 +149,46 @@ class MediaJobRepository:
             result = await session.execute(statement)
             return list(result.scalars())
 
+    async def list_claim_candidates(
+        self,
+        *,
+        now: datetime,
+        limit: int = 100,
+        statuses: Sequence[JobStatus] | None = None,
+    ) -> list[MediaJob]:
+        """List non-terminal work whose retry time and lease allow a claim attempt."""
+
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        now = _utc(now)
+        claim_statuses = statuses or (
+            JobStatus.QUEUED,
+            JobStatus.SUBMITTING,
+            JobStatus.RUNNING,
+        )
+        statement = (
+            select(MediaJob)
+            .where(
+                MediaJob.status.in_(tuple(status.value for status in claim_statuses)),
+                or_(
+                    MediaJob.next_attempt_at.is_(None),
+                    MediaJob.next_attempt_at <= now,
+                ),
+                or_(
+                    and_(
+                        MediaJob.lease_owner.is_(None),
+                        MediaJob.lease_expires_at.is_(None),
+                    ),
+                    MediaJob.lease_expires_at <= now,
+                ),
+            )
+            .order_by(MediaJob.created_at.asc())
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(statement)
+            return list(result.scalars())
+
     async def transition_status(
         self,
         job_id: str,
@@ -186,9 +226,13 @@ class MediaJobRepository:
         job_id: str,
         *,
         expected_version: int,
+        lease_owner: str | None = None,
     ) -> MediaJob:
         """Atomically recover work that crashed before remote submission began."""
 
+        owner_condition = (
+            (MediaJob.lease_owner == lease_owner,) if lease_owner is not None else ()
+        )
         return await self._cas_update(
             job_id,
             expected_status=JobStatus.SUBMITTING,
@@ -200,6 +244,7 @@ class MediaJobRepository:
                     MediaJob.error_category.is_(None),
                     MediaJob.error_category != ErrorCategory.SUBMISSION_UNKNOWN.value,
                 ),
+                *owner_condition,
             ),
             values={
                 "status": JobStatus.QUEUED.value,
@@ -207,6 +252,206 @@ class MediaJobRepository:
                 "lease_expires_at": None,
                 "heartbeat_at": None,
             },
+        )
+
+    async def transition_owned(
+        self,
+        job_id: str,
+        *,
+        expected_status: JobStatus,
+        expected_version: int,
+        lease_owner: str,
+        target_status: JobStatus,
+        error_category: ErrorCategory | None = None,
+        error_message: str | None = None,
+    ) -> MediaJob:
+        """Transition state only while the caller still owns the durable lease."""
+
+        validate_transition(expected_status, target_status)
+        now = utc_now()
+        values: dict = {"status": target_status.value}
+        if target_status in {JobStatus.SUBMITTING, JobStatus.RUNNING}:
+            values["started_at"] = func.coalesce(MediaJob.started_at, now)
+        if is_terminal(target_status):
+            values.update(
+                {
+                    "finished_at": now,
+                    "lease_owner": None,
+                    "lease_expires_at": None,
+                    "heartbeat_at": None,
+                    "next_attempt_at": None,
+                }
+            )
+        if error_category is not None:
+            values["error_category"] = error_category.value
+        if error_message is not None:
+            values["error_message"] = sanitize_error_message(error_message)
+        return await self._cas_update(
+            job_id,
+            expected_status=expected_status,
+            expected_version=expected_version,
+            additional_conditions=(MediaJob.lease_owner == lease_owner,),
+            values=values,
+        )
+
+    async def mark_submit_started_owned(
+        self,
+        job_id: str,
+        *,
+        expected_version: int,
+        lease_owner: str,
+        submit_started_at: datetime,
+    ) -> MediaJob:
+        """Persist the remote-side-effect boundary before POST /prompt."""
+
+        return await self._cas_update(
+            job_id,
+            expected_status=JobStatus.SUBMITTING,
+            expected_version=expected_version,
+            additional_conditions=(
+                MediaJob.lease_owner == lease_owner,
+                MediaJob.submit_started_at.is_(None),
+                MediaJob.comfyui_prompt_id.is_(None),
+            ),
+            values={"submit_started_at": _utc(submit_started_at)},
+        )
+
+    async def record_prompt_owned(
+        self,
+        job_id: str,
+        *,
+        expected_version: int,
+        lease_owner: str,
+        prompt_id: str,
+        remote_status: RemoteJobStatus = RemoteJobStatus.QUEUED,
+    ) -> MediaJob:
+        """Persist a trusted prompt ID and enter recoverable tracking."""
+
+        if not prompt_id.strip():
+            raise ValueError("prompt_id must not be blank")
+        return await self._cas_update(
+            job_id,
+            expected_status=JobStatus.SUBMITTING,
+            expected_version=expected_version,
+            additional_conditions=(
+                MediaJob.lease_owner == lease_owner,
+                MediaJob.submit_started_at.is_not(None),
+                MediaJob.comfyui_prompt_id.is_(None),
+            ),
+            values={
+                "status": JobStatus.RUNNING.value,
+                "comfyui_prompt_id": prompt_id,
+                "remote_status": remote_status.value,
+                "remote_status_updated_at": utc_now(),
+                "error_category": None,
+                "error_message": None,
+            },
+        )
+
+    async def mark_submission_unknown_owned(
+        self,
+        job_id: str,
+        *,
+        expected_version: int,
+        lease_owner: str,
+        error_message: str,
+    ) -> MediaJob:
+        """Persist submission uncertainty without making the job retryable."""
+
+        return await self._cas_update(
+            job_id,
+            expected_status=JobStatus.SUBMITTING,
+            expected_version=expected_version,
+            additional_conditions=(
+                MediaJob.lease_owner == lease_owner,
+                MediaJob.submit_started_at.is_not(None),
+                MediaJob.comfyui_prompt_id.is_(None),
+            ),
+            values={
+                "error_category": ErrorCategory.SUBMISSION_UNKNOWN.value,
+                "error_message": sanitize_error_message(error_message),
+            },
+        )
+
+    async def update_remote_status_owned(
+        self,
+        job_id: str,
+        *,
+        expected_version: int,
+        lease_owner: str,
+        remote_status: RemoteJobStatus,
+    ) -> MediaJob:
+        return await self._cas_update(
+            job_id,
+            expected_status=JobStatus.RUNNING,
+            expected_version=expected_version,
+            additional_conditions=(
+                MediaJob.lease_owner == lease_owner,
+                MediaJob.comfyui_prompt_id.is_not(None),
+            ),
+            values={
+                "remote_status": remote_status.value,
+                "remote_status_updated_at": utc_now(),
+            },
+        )
+
+    async def write_outputs_owned(
+        self,
+        job_id: str,
+        *,
+        expected_version: int,
+        lease_owner: str,
+        outputs: Sequence[MediaOutputMetadata],
+    ) -> MediaJob:
+        return await self._cas_update(
+            job_id,
+            expected_status=JobStatus.RUNNING,
+            expected_version=expected_version,
+            additional_conditions=(MediaJob.lease_owner == lease_owner,),
+            values={"output_metadata": [output.model_dump() for output in outputs]},
+        )
+
+    async def release_owned(
+        self,
+        job_id: str,
+        *,
+        expected_status: JobStatus,
+        expected_version: int,
+        lease_owner: str,
+        next_attempt_at: datetime | None = None,
+    ) -> MediaJob:
+        """Release a non-terminal lease after one bounded execution step."""
+
+        return await self._cas_update(
+            job_id,
+            expected_status=expected_status,
+            expected_version=expected_version,
+            additional_conditions=(MediaJob.lease_owner == lease_owner,),
+            values={
+                "lease_owner": None,
+                "lease_expires_at": None,
+                "heartbeat_at": None,
+                "next_attempt_at": _utc(next_attempt_at),
+            },
+        )
+
+    async def request_cancellation(
+        self,
+        job_id: str,
+        *,
+        expected_status: JobStatus,
+        expected_version: int,
+        requested_at: datetime,
+    ) -> MediaJob:
+        """Persist a cancellation request without changing the task state."""
+
+        if is_terminal(expected_status):
+            raise ValueError("terminal jobs cannot receive cancellation requests")
+        return await self._cas_update(
+            job_id,
+            expected_status=expected_status,
+            expected_version=expected_version,
+            values={"cancel_requested_at": _utc(requested_at)},
         )
 
     async def mark_submission_unknown(
@@ -344,14 +589,21 @@ class MediaJobRepository:
         lease_owner: str,
         lease_expires_at: datetime,
     ) -> MediaJob:
+        now = utc_now()
+        normalized_expiry = _utc(lease_expires_at)
+        if normalized_expiry is None or normalized_expiry <= now:
+            raise ValueError("heartbeat lease expiry must be in the future")
         return await self._cas_update(
             job_id,
             expected_status=expected_status,
             expected_version=expected_version,
-            additional_conditions=(MediaJob.lease_owner == lease_owner,),
+            additional_conditions=(
+                MediaJob.lease_owner == lease_owner,
+                MediaJob.lease_expires_at > now,
+            ),
             values={
-                "heartbeat_at": utc_now(),
-                "lease_expires_at": _utc(lease_expires_at),
+                "heartbeat_at": now,
+                "lease_expires_at": normalized_expiry,
             },
         )
 

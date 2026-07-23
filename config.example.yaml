@@ -5,13 +5,15 @@
 project_name: Pixelle-Video
 
 # ==================== Persistent Media Jobs ====================
-# Disabled by default. The SQLite URL and managed roots are project-relative
-# placeholders and contain no credentials or remote infrastructure details.
+# Disabled by default. Relative paths resolve from the loaded config file's
+# directory and contain no credentials or remote infrastructure details.
 media_jobs:
   enabled: false
   database_url: "sqlite+aiosqlite:///data/media_jobs.db"
   worker_mode: external
   poll_interval_seconds: 2.0
+  history_poll_interval_seconds: 2.0
+  recovery_scan_interval_seconds: 10.0
   lease_seconds: 60
   heartbeat_seconds: 20
   default_timeout_seconds: 900
