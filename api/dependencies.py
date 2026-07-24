@@ -17,14 +17,19 @@ Provides dependency injection for PixelleVideoCore and other services.
 """
 
 from typing import Annotated
+
 from fastapi import Depends
 from loguru import logger
 
+from api.services.media_jobs import MediaJobApplicationService
+from pixelle_video.config.manager import ConfigManager
+from pixelle_video.media_jobs import MediaJobRepository, MediaJobsDatabase
 from pixelle_video.service import PixelleVideoCore
-
 
 # Global Pixelle-Video instance
 _pixelle_video_instance: PixelleVideoCore = None
+_media_jobs_database: MediaJobsDatabase | None = None
+_media_jobs_service: MediaJobApplicationService | None = None
 
 
 async def get_pixelle_video() -> PixelleVideoCore:
@@ -56,6 +61,26 @@ async def shutdown_pixelle_video():
     await HTMLFrameGenerator.close_browser()
 
 
+async def get_media_job_service() -> MediaJobApplicationService:
+    """Lazily connect to the configured schema without migrating or creating tables."""
+
+    global _media_jobs_database, _media_jobs_service
+    if _media_jobs_service is None:
+        config = ConfigManager().config.media_jobs
+        _media_jobs_database = MediaJobsDatabase(config)
+        repository = MediaJobRepository(_media_jobs_database.connect())
+        _media_jobs_service = MediaJobApplicationService(repository, config)
+    return _media_jobs_service
+
+
+async def shutdown_media_jobs() -> None:
+    global _media_jobs_database, _media_jobs_service
+    if _media_jobs_database is not None:
+        await _media_jobs_database.dispose()
+    _media_jobs_database = None
+    _media_jobs_service = None
+
+
 # Type alias for dependency injection
 PixelleVideoDep = Annotated[PixelleVideoCore, Depends(get_pixelle_video)]
-
+MediaJobServiceDep = Annotated[MediaJobApplicationService, Depends(get_media_job_service)]

@@ -38,20 +38,22 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
             "input_assets_json",
             "remote_status",
             "remote_termination_status",
-            "version",
+                "version",
+                "retry_of_job_id",
         } <= columns
         index_names = {index["name"] for index in inspector.get_indexes("media_jobs")}
         assert {
             "ix_media_jobs_status",
             "ix_media_jobs_status_next_attempt",
             "ix_media_jobs_next_attempt_at",
-            "ix_media_jobs_lease_expires_at",
+                "ix_media_jobs_lease_expires_at",
+                "ix_media_jobs_retry_of_job_id",
         } <= index_names
         version = engine.execute if False else None
         del version
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0001_create_media_jobs"
+        assert revision == "0002_add_media_job_retry_lineage"
     finally:
         engine.dispose()
 
@@ -147,5 +149,25 @@ def test_orm_metadata_matches_migrated_schema(tmp_path: Path) -> None:
             for index in inspector.get_indexes("media_jobs")
         }
         assert reflected_indexes == model_indexes
+    finally:
+        engine.dispose()
+
+
+def test_retry_lineage_migration_downgrade_and_reupgrade(tmp_path: Path) -> None:
+    database_path = tmp_path / "round-trip.db"
+    config = alembic_config(database_path)
+    command.upgrade(config, "head")
+    command.downgrade(config, "0001_create_media_jobs")
+    engine = create_engine(sync_sqlite_url(database_path))
+    try:
+        columns = {column["name"] for column in inspect(engine).get_columns("media_jobs")}
+        assert "retry_of_job_id" not in columns
+    finally:
+        engine.dispose()
+    command.upgrade(config, "head")
+    engine = create_engine(sync_sqlite_url(database_path))
+    try:
+        columns = {column["name"] for column in inspect(engine).get_columns("media_jobs")}
+        assert "retry_of_job_id" in columns
     finally:
         engine.dispose()

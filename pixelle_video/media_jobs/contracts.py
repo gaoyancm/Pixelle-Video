@@ -138,6 +138,7 @@ class MediaJobCreate(BaseModel):
     )
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=255)
     deadline_at: datetime | None = None
+    retry_of_job_id: str | None = Field(default=None, min_length=36, max_length=36)
 
     def immutable_request_payload(self) -> dict[str, Any]:
         """Return the exact request content covered by idempotency hashing."""

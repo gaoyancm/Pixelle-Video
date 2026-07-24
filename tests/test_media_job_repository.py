@@ -663,3 +663,70 @@ async def test_sqlite_pragmas_are_enabled(tmp_path: Path) -> None:
     assert busy_timeout == 5000
     assert journal_mode.lower() == "wal"
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_retry_creation_is_atomic_idempotent_and_preserves_parent(tmp_path: Path) -> None:
+    repository, engine, sessions = await open_repository(tmp_path / "retry.db")
+    parent = (await repository.create_job(make_create(idempotency_key="parent"))).job
+    async with sessions() as session, session.begin():
+        await session.execute(
+            update(MediaJob)
+            .where(MediaJob.job_id == parent.job_id)
+            .values(status="failed", error_category=ErrorCategory.INTERNAL.value)
+        )
+
+    results = await asyncio.gather(
+        *(
+            repository.create_retry_job(
+                parent.job_id,
+                idempotency_key="retry:stable",
+                deadline_at=utc_now() + timedelta(minutes=15),
+            )
+            for _ in range(8)
+        )
+    )
+    children = {result.job.job_id for result in results}
+    assert len(children) == 1
+    child = results[0].job
+    assert child.retry_of_job_id == parent.job_id
+    assert child.retry_count == parent.retry_count + 1
+    assert child.submission_token != parent.submission_token
+    assert (await repository.get_job(parent.job_id)).status == "failed"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_retry_rejects_submission_unknown(tmp_path: Path) -> None:
+    repository, engine, sessions = await open_repository(tmp_path / "unknown-retry.db")
+    parent = (await repository.create_job(make_create())).job
+    async with sessions() as session, session.begin():
+        await session.execute(
+            update(MediaJob)
+            .where(MediaJob.job_id == parent.job_id)
+            .values(
+                status="failed",
+                error_category=ErrorCategory.SUBMISSION_UNKNOWN.value,
+            )
+        )
+    with pytest.raises(ValueError, match="not retryable"):
+        await repository.create_retry_job(
+            parent.job_id,
+            idempotency_key="retry:unknown",
+            deadline_at=utc_now() + timedelta(minutes=15),
+        )
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_uses_job_id_as_stable_secondary_sort(tmp_path: Path) -> None:
+    repository, engine, sessions = await open_repository(tmp_path / "stable-list.db")
+    jobs = [(await repository.create_job(make_create())).job for _ in range(3)]
+    same_time = utc_now()
+    async with sessions() as session, session.begin():
+        await session.execute(update(MediaJob).values(created_at=same_time))
+    listed = await repository.list_jobs(limit=3)
+    assert [job.job_id for job in listed] == sorted(
+        (job.job_id for job in jobs), reverse=True
+    )
+    await engine.dispose()

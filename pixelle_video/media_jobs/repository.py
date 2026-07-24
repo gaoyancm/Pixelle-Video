@@ -89,6 +89,7 @@ class MediaJobRepository:
             deadline_at=_utc(create.deadline_at),
             output_metadata=[],
             retry_count=0,
+            retry_of_job_id=create.retry_of_job_id,
             version=1,
             remote_status=RemoteJobStatus.UNKNOWN.value,
             remote_termination_status=RemoteTerminationStatus.UNKNOWN.value,
@@ -144,10 +145,88 @@ class MediaJobRepository:
         statement: Select[tuple[MediaJob]] = select(MediaJob)
         if status is not None:
             statement = statement.where(MediaJob.status == status.value)
-        statement = statement.order_by(MediaJob.created_at.desc()).limit(limit).offset(offset)
+        statement = (
+            statement.order_by(MediaJob.created_at.desc(), MediaJob.job_id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
         async with self._session_factory() as session:
             result = await session.execute(statement)
             return list(result.scalars())
+
+    async def create_retry_job(
+        self,
+        source_job_id: str,
+        *,
+        idempotency_key: str,
+        deadline_at: datetime,
+    ) -> CreateJobResult:
+        """Atomically validate a retry source and create its new queued child."""
+
+        async with self._session_factory() as session:
+            try:
+                async with session.begin():
+                    source = await session.get(MediaJob, source_job_id)
+                    if source is None:
+                        raise LookupError("media job not found")
+                    error = (
+                        ErrorCategory(source.error_category)
+                        if source.error_category is not None
+                        else None
+                    )
+                    from .state_machine import can_retry
+
+                    if not can_retry(JobStatus(source.status), error):
+                        raise ValueError("media job is not retryable")
+                    create = MediaJobCreate(
+                        workflow_type=source.workflow_type,
+                        workflow_key=source.workflow_key,
+                        executor_kind=source.executor_kind,
+                        provider=source.provider,
+                        node_id=source.node_id,
+                        input_json=source.input_json,
+                        input_assets_json=source.input_assets_json,
+                        idempotency_key=idempotency_key,
+                        deadline_at=deadline_at,
+                        retry_of_job_id=source.job_id,
+                    )
+                    request_hash = compute_request_hash(create.immutable_request_payload())
+                    child = MediaJob(
+                        job_id=create.job_id,
+                        workflow_type=create.workflow_type,
+                        workflow_key=create.workflow_key,
+                        executor_kind=create.executor_kind,
+                        provider=create.provider,
+                        node_id=create.node_id,
+                        status=JobStatus.QUEUED.value,
+                        input_json=create.input_json,
+                        input_assets_json=[
+                            asset.model_dump() for asset in create.input_assets_json
+                        ],
+                        submission_token=create.submission_token,
+                        idempotency_key=create.idempotency_key,
+                        request_hash=request_hash,
+                        deadline_at=create.deadline_at,
+                        output_metadata=[],
+                        retry_count=source.retry_count + 1,
+                        retry_of_job_id=source.job_id,
+                        version=1,
+                        remote_status=RemoteJobStatus.UNKNOWN.value,
+                        remote_termination_status=RemoteTerminationStatus.UNKNOWN.value,
+                    )
+                    session.add(child)
+                    await session.flush()
+                return CreateJobResult(job=child, created=True)
+            except IntegrityError:
+                await session.rollback()
+                existing = await self._get_by_idempotency_key(session, idempotency_key)
+                if existing is None:
+                    raise
+                if existing.retry_of_job_id != source_job_id:
+                    raise IdempotencyConflictError(
+                        "idempotency key belongs to a different retry request"
+                    ) from None
+                return CreateJobResult(job=existing, created=False)
 
     async def list_claim_candidates(
         self,

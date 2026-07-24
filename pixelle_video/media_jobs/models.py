@@ -103,6 +103,7 @@ class MediaJob(Base):
     retry_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
+    retry_of_job_id: Mapped[str | None] = mapped_column(String(36), index=True)
 
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), nullable=False, default=utc_now, server_default=text("CURRENT_TIMESTAMP")
