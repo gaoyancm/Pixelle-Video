@@ -71,9 +71,9 @@ class MediaJobRepository:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
         self._session_factory = session_factory
 
-    async def create_job(self, create: MediaJobCreate) -> CreateJobResult:
-        request_hash = compute_request_hash(create.immutable_request_payload())
-        job = MediaJob(
+    @staticmethod
+    def _new_job(create: MediaJobCreate, request_hash: str) -> MediaJob:
+        return MediaJob(
             job_id=create.job_id,
             workflow_type=create.workflow_type,
             workflow_key=create.workflow_key,
@@ -95,6 +95,10 @@ class MediaJobRepository:
             remote_termination_status=RemoteTerminationStatus.UNKNOWN.value,
         )
 
+    async def create_job(self, create: MediaJobCreate) -> CreateJobResult:
+        request_hash = compute_request_hash(create.immutable_request_payload())
+        job = self._new_job(create, request_hash)
+
         async with self._session_factory() as session:
             try:
                 async with session.begin():
@@ -114,6 +118,56 @@ class MediaJobRepository:
                 return CreateJobResult(job=existing, created=False)
 
         return CreateJobResult(job=job, created=True)
+
+    async def create_job_with_assets(self, create: MediaJobCreate) -> CreateJobResult:
+        """Create the job and its validated input relations in one transaction."""
+
+        from pixelle_video.media_assets.contracts import AssetDirection, AssetKind, AssetState
+        from pixelle_video.media_assets.models import MediaAsset, MediaJobAsset
+
+        request_hash = compute_request_hash(create.immutable_request_payload())
+        job = self._new_job(create, request_hash)
+        async with self._session_factory() as session:
+            try:
+                async with session.begin():
+                    for position, reference in enumerate(create.input_assets_json):
+                        result = await session.execute(
+                            update(MediaAsset)
+                            .where(
+                                MediaAsset.id == reference.asset_id,
+                                MediaAsset.kind == AssetKind.INPUT.value,
+                                MediaAsset.state == AssetState.AVAILABLE.value,
+                            )
+                            .values(updated_at=MediaAsset.updated_at)
+                            .returning(MediaAsset)
+                        )
+                        asset = result.scalar_one_or_none()
+                        if asset is None:
+                            raise ValueError("input asset is unavailable")
+                        session.add(
+                            MediaJobAsset(
+                                job_id=job.job_id,
+                                asset_id=asset.id,
+                                direction=AssetDirection.INPUT.value,
+                                role=reference.role or "input",
+                                position=position,
+                            )
+                        )
+                    session.add(job)
+                    await session.flush()
+                return CreateJobResult(job=job, created=True)
+            except IntegrityError:
+                await session.rollback()
+                if create.idempotency_key is None:
+                    raise
+                existing = await self._get_by_idempotency_key(session, create.idempotency_key)
+                if existing is None:
+                    raise
+                if existing.request_hash != request_hash:
+                    raise IdempotencyConflictError(
+                        "idempotency key is already associated with a different request"
+                    ) from None
+                return CreateJobResult(job=existing, created=False)
 
     async def get_job(self, job_id: str) -> MediaJob | None:
         async with self._session_factory() as session:
@@ -216,6 +270,41 @@ class MediaJobRepository:
                     )
                     session.add(child)
                     await session.flush()
+                    from pixelle_video.media_assets.contracts import (
+                        AssetDirection,
+                        AssetState,
+                    )
+                    from pixelle_video.media_assets.models import MediaAsset, MediaJobAsset
+
+                    relations = await session.execute(
+                        select(MediaJobAsset, MediaAsset)
+                        .join(MediaAsset, MediaAsset.id == MediaJobAsset.asset_id)
+                        .where(
+                            MediaJobAsset.job_id == source.job_id,
+                            MediaJobAsset.direction == AssetDirection.INPUT.value,
+                        )
+                    )
+                    for relation, asset in relations.tuples():
+                        result = await session.execute(
+                            update(MediaAsset)
+                            .where(
+                                MediaAsset.id == asset.id,
+                                MediaAsset.state == AssetState.AVAILABLE.value,
+                            )
+                            .values(updated_at=MediaAsset.updated_at)
+                            .returning(MediaAsset.id)
+                        )
+                        if result.scalar_one_or_none() is None:
+                            raise ValueError("input asset is unavailable")
+                        session.add(
+                            MediaJobAsset(
+                                job_id=child.job_id,
+                                asset_id=relation.asset_id,
+                                direction=AssetDirection.INPUT.value,
+                                role=relation.role,
+                                position=relation.position,
+                            )
+                        )
                 return CreateJobResult(job=child, created=True)
             except IntegrityError:
                 await session.rollback()

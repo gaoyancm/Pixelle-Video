@@ -7,6 +7,7 @@ from datetime import timedelta
 
 from api.schemas.media_jobs import MediaJobRequest
 from pixelle_video.config.schema import MediaJobsConfig
+from pixelle_video.media_assets import AssetService, AssetUnavailableError
 from pixelle_video.media_jobs import (
     CASConflictError,
     MediaInputAsset,
@@ -38,12 +39,22 @@ def _scoped_key(operation: str, raw_key: str, source_job_id: str = "") -> str:
 class MediaJobApplicationService:
     """Own API business rules and short transactional repository calls."""
 
-    def __init__(self, repository: MediaJobRepository, config: MediaJobsConfig):
+    def __init__(
+        self,
+        repository: MediaJobRepository,
+        config: MediaJobsConfig,
+        assets: AssetService | None = None,
+    ):
         self.repository = repository
         self.config = config
+        self.assets = assets
 
     async def create(self, request: MediaJobRequest, idempotency_key: str) -> tuple[MediaJob, bool]:
         spec = get_workflow_spec(request.workflow)
+        if request.asset_id is not None and self.assets is not None:
+            asset = await self.assets.get_available_input(request.asset_id)
+            if asset.media_type != "image":
+                raise AssetUnavailableError
         create = MediaJobCreate(
             workflow_type=spec.workflow_type,
             workflow_key=spec.workflow_key,
@@ -58,7 +69,11 @@ class MediaJobApplicationService:
             idempotency_key=_scoped_key("create", idempotency_key),
             deadline_at=utc_now() + timedelta(seconds=self.config.default_timeout_seconds),
         )
-        result = await self.repository.create_job(create)
+        result = (
+            await self.repository.create_job_with_assets(create)
+            if self.assets is not None
+            else await self.repository.create_job(create)
+        )
         return result.job, result.created
 
     async def get(self, job_id: str) -> MediaJob:

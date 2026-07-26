@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import mimetypes
+import re
 from datetime import timedelta
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pixelle_video.services.comfyui_adapter import (
     ComfyUIAdapter,
@@ -23,8 +24,16 @@ from .repository import MediaJobRepository
 from .state_machine import ErrorCategory, JobStatus, RemoteJobStatus
 from .worker import LeaseHandle, LeaseLostError
 
+if TYPE_CHECKING:
+    from pixelle_video.media_assets import AssetService
+
 _VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv"}
 _MANAGED_COMFYUI_OUTPUT_TYPE = "output"
+_LEGACY_ASSET_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_UUID_SHAPED = re.compile(
+    r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+)
 _PARAMETER_NAMES = {
     "prompt",
     "negative_prompt",
@@ -49,11 +58,15 @@ class ManagedAssetResolver:
             raise ValueError(f"workflow '{job.workflow_type}' requires an input asset")
         asset_id = str(job.input_assets_json[0].get("asset_id") or "")
         posix = PurePosixPath(asset_id)
+        windows = PureWindowsPath(asset_id)
         if (
             not asset_id
+            or not _LEGACY_ASSET_ID.fullmatch(asset_id)
+            or _UUID_SHAPED.fullmatch(asset_id)
             or "\\" in asset_id
             or posix.is_absolute()
-            or PureWindowsPath(asset_id).is_absolute()
+            or windows.is_absolute()
+            or bool(windows.drive)
             or any(part in {"", ".", ".."} for part in posix.parts)
         ):
             raise ValueError("input asset id is not a safe managed relative path")
@@ -78,11 +91,13 @@ class RecoverableComfyUIExecutor:
         managed_asset_root: str | Path,
         managed_output_root: str | Path,
         history_poll_interval_seconds: float = 2.0,
+        asset_service: AssetService | None = None,
         clock=utc_now,
     ):
         self.repository = repository
         self.adapter = adapter
         self.assets = ManagedAssetResolver(managed_asset_root)
+        self.asset_service = asset_service
         self.output_root = Path(managed_output_root).resolve()
         self.history_poll_interval_seconds = history_poll_interval_seconds
         self._clock = clock
@@ -142,7 +157,7 @@ class RecoverableComfyUIExecutor:
 
     async def _submit_new(self, job: MediaJob, lease: LeaseHandle) -> None:
         try:
-            parameters = self._build_parameters(job)
+            parameters = await self._build_parameters(job)
             prepared = await self.adapter.prepare_submission(
                 job.workflow_type,
                 **parameters,
@@ -275,9 +290,24 @@ class RecoverableComfyUIExecutor:
         lease: LeaseHandle,
         remote_job: ComfyUIJob,
     ) -> None:
+        if (
+            self.asset_service is not None
+            and await self.asset_service.repository.has_output_relations(job.job_id)
+        ):
+            if await self.asset_service.validate_committed_output_group(job.job_id):
+                await self._finish(job, lease, JobStatus.SUCCEEDED, None, None)
+            else:
+                await self._finish(
+                    job,
+                    lease,
+                    JobStatus.FAILED,
+                    ErrorCategory.OUTPUT_MISSING,
+                    "persisted output assets are incomplete or unavailable",
+                )
+            return
         try:
             remote_outputs = await self.adapter.get_outputs(remote_job)
-            outputs = await self._store_outputs(job, remote_outputs)
+            outputs, generated_assets = await self._store_outputs(job, remote_outputs)
         except Exception as error:
             await self._finish(
                 job,
@@ -296,15 +326,29 @@ class RecoverableComfyUIExecutor:
                 "ComfyUI completed without a valid media output",
             )
             return
+        registered = False
         try:
-            await lease.mutate(
-                lambda _status, version: self.repository.write_outputs_owned(
-                    job.job_id,
-                    expected_version=version,
-                    lease_owner=lease.worker_id,
-                    outputs=outputs,
+            if self.asset_service is not None:
+                await lease.mutate(
+                    lambda _status, version: self.asset_service.repository.register_output_group(
+                        job_id=job.job_id,
+                        lease_owner=lease.worker_id,
+                        expected_version=version,
+                        assets=generated_assets,
+                        roles=["generated_video"] * len(generated_assets),
+                        output_metadata=[output.model_dump() for output in outputs],
+                    )
                 )
-            )
+                registered = True
+            else:
+                await lease.mutate(
+                    lambda _status, version: self.repository.write_outputs_owned(
+                        job.job_id,
+                        expected_version=version,
+                        lease_owner=lease.worker_id,
+                        outputs=outputs,
+                    )
+                )
             await self._finish(
                 job,
                 lease,
@@ -313,8 +357,31 @@ class RecoverableComfyUIExecutor:
                 None,
             )
         except LeaseLostError:
-            await self._remove_outputs(outputs)
+            if not registered:
+                await self._remove_outputs(outputs, generated_assets)
             raise
+        except Exception as error:
+            if self.asset_service is None:
+                await self._remove_outputs(outputs, generated_assets)
+                raise
+            from pixelle_video.media_assets.repository import (
+                OutputRegistrationDisposition,
+                OutputRegistrationError,
+            )
+
+            if not isinstance(error, OutputRegistrationError):
+                raise
+            if error.disposition is OutputRegistrationDisposition.NOT_COMMITTED:
+                await self._remove_outputs(outputs, generated_assets)
+                await self._finish(
+                    job,
+                    lease,
+                    JobStatus.FAILED,
+                    ErrorCategory.INTERNAL,
+                    "output asset registration failed before commit",
+                )
+                return
+            await self._release_later(lease)
 
     async def _reconcile_unknown(self, job: MediaJob, lease: LeaseHandle) -> None:
         if job.error_category != ErrorCategory.SUBMISSION_UNKNOWN.value:
@@ -350,7 +417,7 @@ class RecoverableComfyUIExecutor:
         )
         await self._release_later(lease)
 
-    def _build_parameters(self, job: MediaJob) -> dict[str, Any]:
+    async def _build_parameters(self, job: MediaJob) -> dict[str, Any]:
         get_workflow_spec(job.workflow_type)
         parameters = {
             key: value
@@ -363,6 +430,12 @@ class RecoverableComfyUIExecutor:
         parameters.setdefault("output_prefix", f"media_jobs/{job.job_id}")
         spec = get_workflow_spec(job.workflow_type)
         if spec.requires_image:
+            if self.asset_service is not None:
+                managed = await self.asset_service.resolve_job_input(job.job_id)
+                if managed is not None:
+                    parameters["image_path"] = managed
+                    return parameters
+            # 02-E removal target: historical 02-A through 02-C path references only.
             parameters["image_path"] = self.assets.resolve_first(job)
         return parameters
 
@@ -370,15 +443,38 @@ class RecoverableComfyUIExecutor:
         self,
         job: MediaJob,
         outputs: list[ComfyUIOutput],
-    ) -> list[MediaOutputMetadata]:
+    ) -> tuple[list[MediaOutputMetadata], list]:
         managed: list[MediaOutputMetadata] = []
+        generated_assets = []
         for index, output in enumerate(outputs):
             suffix = Path(output.filename).suffix.lower()
             if suffix not in _VIDEO_EXTENSIONS:
                 continue
             if not self._is_safe_remote_output_reference(output):
                 continue
-            content = await self.adapter.download_output(output)
+            try:
+                content = await self.adapter.download_output(output)
+                if self.asset_service is not None:
+                    asset = await self.asset_service.register_generated_bytes(
+                        content, filename=output.filename
+                    )
+                    generated_assets.append(asset)
+                    managed.append(
+                        MediaOutputMetadata(
+                            output_id=asset.id,
+                            media_type=asset.media_type,
+                            relative_path=asset.object_key,
+                            size=asset.size_bytes,
+                            mime_type=asset.mime_type,
+                            sha256=asset.sha256,
+                        )
+                    )
+                    continue
+            except Exception:
+                if self.asset_service is not None:
+                    for asset in generated_assets:
+                        self.asset_service.discard_unregistered(asset)
+                raise
             relative = PurePosixPath(job.job_id, f"{index:03d}-{output.filename}")
             destination = self.output_root / Path(*relative.parts)
             await asyncio.to_thread(self._write_file, destination, content)
@@ -393,7 +489,7 @@ class RecoverableComfyUIExecutor:
                     sha256=hashlib.sha256(content).hexdigest(),
                 )
             )
-        return managed
+        return managed, generated_assets
 
     @staticmethod
     def _is_safe_remote_output_reference(output: ComfyUIOutput) -> bool:
@@ -431,7 +527,11 @@ class RecoverableComfyUIExecutor:
         temporary.write_bytes(content)
         temporary.replace(destination)
 
-    async def _remove_outputs(self, outputs: list[MediaOutputMetadata]) -> None:
+    async def _remove_outputs(self, outputs: list[MediaOutputMetadata], generated_assets=None) -> None:
+        if self.asset_service is not None:
+            for asset in generated_assets or []:
+                self.asset_service.discard_unregistered(asset)
+            return
         for output in outputs:
             path = self.output_root / Path(*PurePosixPath(output.relative_path).parts)
             await asyncio.to_thread(path.unlink, missing_ok=True)

@@ -26,6 +26,7 @@ from api.services.media_jobs import (
     JobNotFoundError,
     JobNotRetryableError,
 )
+from pixelle_video.media_assets import AssetNotFoundError, AssetUnavailableError
 from pixelle_video.media_jobs import IdempotencyConflictError, MediaJobsDisabledError
 from pixelle_video.media_jobs.models import MediaJob
 from pixelle_video.media_jobs.state_machine import JobStatus
@@ -56,6 +57,8 @@ class MediaJobRoute(APIRoute):
                 return _error(409, "job_not_retryable", "The media job cannot be retried.")
             except IdempotencyConflictError:
                 return _error(409, "idempotency_conflict", "The idempotency key conflicts.")
+            except (AssetNotFoundError, AssetUnavailableError, ValueError):
+                return _error(422, "invalid_asset", "The input asset is invalid or unavailable.")
             except SQLAlchemyError:
                 return _error(503, "service_unavailable", "Persistent media jobs are unavailable.")
             except Exception:

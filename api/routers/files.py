@@ -16,12 +16,23 @@ File service endpoints
 Provides access to generated files (videos, images, audio) and resource files.
 """
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from loguru import logger
 
 router = APIRouter(prefix="/files", tags=["Files"])
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_ALLOWED_ROOTS = (
+    "output",
+    "workflows",
+    "templates",
+    "bgm",
+    "data/bgm",
+    "data/templates",
+    "resources",
+)
 
 
 @router.get("/{file_path:path}")
@@ -50,54 +61,42 @@ async def get_file(file_path: str):
     Returns file for download or preview.
     """
     try:
-        # Define allowed directories (in priority order)
-        allowed_prefixes = [
-            "output/",
-            "workflows/",
-            "templates/",
-            "bgm/",
-            "data/bgm/",
-            "data/templates/",
-            "resources/",
-        ]
-        
-        # Check if path starts with allowed prefix, otherwise try output/
-        full_path = None
-        for prefix in allowed_prefixes:
-            if file_path.startswith(prefix):
-                full_path = file_path
-                break
-        
-        # If no prefix matched, assume it's in output/ (backward compatibility)
-        if full_path is None:
-            full_path = f"output/{file_path}"
-        
-        abs_path = Path.cwd() / full_path
-        
-        if not abs_path.exists():
-            raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
-        
-        if not abs_path.is_file():
-            raise HTTPException(status_code=400, detail=f"Path is not a file: {file_path}")
-        
-        # Security: only allow access to specified directories
-        try:
-            rel_path = abs_path.relative_to(Path.cwd())
-            rel_path_str = str(rel_path)
-            
-            # Check if path starts with any allowed prefix
-            is_allowed = any(rel_path_str.startswith(prefix.rstrip('/')) for prefix in allowed_prefixes)
-            
-            if not is_allowed:
-                raise HTTPException(
-                    status_code=403, 
-                    detail=f"Access denied: only {', '.join(p.rstrip('/') for p in allowed_prefixes)} directories are accessible"
-                )
-        except ValueError:
+        if (
+            not file_path
+            or "\x00" in file_path
+            or "\\" in file_path
+            or PurePosixPath(file_path).is_absolute()
+            or PureWindowsPath(file_path).is_absolute()
+            or PureWindowsPath(file_path).drive
+            or any(part in {"", ".", ".."} for part in file_path.split("/"))
+        ):
             raise HTTPException(status_code=403, detail="Access denied")
-        
+
+        selected_root = "output"
+        relative_parts = file_path.split("/")
+        for allowed in sorted(_ALLOWED_ROOTS, key=len, reverse=True):
+            allowed_parts = allowed.split("/")
+            if relative_parts[: len(allowed_parts)] == allowed_parts:
+                selected_root = allowed
+                relative_parts = relative_parts[len(allowed_parts) :]
+                break
+        if not relative_parts:
+            raise HTTPException(status_code=400, detail="Path is not a file")
+
+        allowed_root = (_PROJECT_ROOT / selected_root).resolve()
+        candidate = allowed_root.joinpath(*relative_parts)
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(allowed_root)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="File not found") from None
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied") from None
+        if candidate.is_symlink() or not resolved.is_file():
+            raise HTTPException(status_code=400, detail="Path is not a regular file")
+
         # Determine media type
-        suffix = abs_path.suffix.lower()
+        suffix = resolved.suffix.lower()
         media_types = {
             '.mp4': 'video/mp4',
             '.mp3': 'audio/mpeg',
@@ -113,16 +112,15 @@ async def get_file(file_path: str):
         
         # Use inline disposition for browser preview
         return FileResponse(
-            path=str(abs_path),
+            path=str(resolved),
             media_type=media_type,
             headers={
-                "Content-Disposition": f'inline; filename="{abs_path.name}"'
+                "Content-Disposition": f'inline; filename="{resolved.name}"'
             }
         )
         
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"File access error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
+    except Exception:
+        logger.error("Unhandled legacy file access error")
+        raise HTTPException(status_code=500, detail="Internal file access error") from None

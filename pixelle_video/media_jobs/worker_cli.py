@@ -6,8 +6,10 @@ import argparse
 import asyncio
 import signal
 from pathlib import Path
+from typing import Any
 
 from pixelle_video.config.manager import ConfigManager
+from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
 from pixelle_video.services.comfyui_adapter import ComfyUIAdapter
 
 from .database import MediaJobsDatabase
@@ -21,21 +23,34 @@ def _managed_path(base_dir: Path, configured: str) -> Path:
     return path if path.is_absolute() else (base_dir / path).resolve()
 
 
+def _build_executor(manager: ConfigManager, session_factory: Any) -> RecoverableComfyUIExecutor:
+    """Build the exact production executor dependency graph without starting a Worker."""
+
+    config = manager.config.media_jobs
+    config_base = Path(config.config_base_dir or "").resolve()
+    repository = MediaJobRepository(session_factory)
+    asset_service = AssetService(
+        AssetRepository(session_factory),
+        LocalAssetStore(_managed_path(config_base, config.asset_store_root)),
+        max_upload_size=config.asset_max_upload_size,
+    )
+    return RecoverableComfyUIExecutor(
+        repository,
+        ComfyUIAdapter(manager.config.comfyui.nodes),
+        managed_asset_root=_managed_path(config_base, config.managed_asset_root),
+        managed_output_root=_managed_path(config_base, config.managed_output_root),
+        history_poll_interval_seconds=config.history_poll_interval_seconds,
+        asset_service=asset_service,
+    )
+
+
 async def run_worker(args: argparse.Namespace) -> None:
     manager = ConfigManager(args.config)
     config = manager.config.media_jobs
     database = MediaJobsDatabase(config)
     session_factory = database.connect()
-    repository = MediaJobRepository(session_factory)
-    config_base = Path(config.config_base_dir or "").resolve()
-    adapter = ComfyUIAdapter(manager.config.comfyui.nodes)
-    executor = RecoverableComfyUIExecutor(
-        repository,
-        adapter,
-        managed_asset_root=_managed_path(config_base, config.managed_asset_root),
-        managed_output_root=_managed_path(config_base, config.managed_output_root),
-        history_poll_interval_seconds=config.history_poll_interval_seconds,
-    )
+    executor = _build_executor(manager, session_factory)
+    repository = executor.repository
     worker = MediaJobWorker(
         repository,
         executor,

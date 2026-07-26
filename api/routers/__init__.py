@@ -20,6 +20,7 @@ from api.routers.frame import router as frame_router
 from api.routers.health import router as health_router
 from api.routers.image import router as image_router
 from api.routers.llm import router as llm_router
+from api.routers.media_assets import router as media_assets_router
 from api.routers.media_jobs import router as media_jobs_router
 from api.routers.resources import router as resources_router
 from api.routers.tasks import router as tasks_router
@@ -38,4 +39,5 @@ __all__ = [
     "resources_router",
     "frame_router",
     "media_jobs_router",
+    "media_assets_router",
 ]

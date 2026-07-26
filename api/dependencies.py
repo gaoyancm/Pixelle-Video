@@ -16,6 +16,7 @@ FastAPI Dependencies
 Provides dependency injection for PixelleVideoCore and other services.
 """
 
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends
@@ -23,6 +24,7 @@ from loguru import logger
 
 from api.services.media_jobs import MediaJobApplicationService
 from pixelle_video.config.manager import ConfigManager
+from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
 from pixelle_video.media_jobs import MediaJobRepository, MediaJobsDatabase
 from pixelle_video.service import PixelleVideoCore
 
@@ -30,6 +32,7 @@ from pixelle_video.service import PixelleVideoCore
 _pixelle_video_instance: PixelleVideoCore = None
 _media_jobs_database: MediaJobsDatabase | None = None
 _media_jobs_service: MediaJobApplicationService | None = None
+_media_assets_service: AssetService | None = None
 
 
 async def get_pixelle_video() -> PixelleVideoCore:
@@ -69,18 +72,42 @@ async def get_media_job_service() -> MediaJobApplicationService:
         config = ConfigManager().config.media_jobs
         _media_jobs_database = MediaJobsDatabase(config)
         repository = MediaJobRepository(_media_jobs_database.connect())
-        _media_jobs_service = MediaJobApplicationService(repository, config)
+        assets = await get_media_asset_service()
+        _media_jobs_service = MediaJobApplicationService(repository, config, assets)
     return _media_jobs_service
 
 
+async def get_media_asset_service() -> AssetService:
+    """Lazily build the local asset service on the media-jobs database."""
+
+    global _media_jobs_database, _media_assets_service
+    if _media_assets_service is None:
+        config = ConfigManager().config.media_jobs
+        if _media_jobs_database is None:
+            _media_jobs_database = MediaJobsDatabase(config)
+        session_factory = _media_jobs_database.connect()
+        base_dir = Path(config.config_base_dir or Path(__file__).resolve().parents[1])
+        root = Path(config.asset_store_root)
+        if not root.is_absolute():
+            root = base_dir / root
+        _media_assets_service = AssetService(
+            AssetRepository(session_factory),
+            LocalAssetStore(root),
+            max_upload_size=config.asset_max_upload_size,
+        )
+    return _media_assets_service
+
+
 async def shutdown_media_jobs() -> None:
-    global _media_jobs_database, _media_jobs_service
+    global _media_assets_service, _media_jobs_database, _media_jobs_service
     if _media_jobs_database is not None:
         await _media_jobs_database.dispose()
     _media_jobs_database = None
     _media_jobs_service = None
+    _media_assets_service = None
 
 
 # Type alias for dependency injection
 PixelleVideoDep = Annotated[PixelleVideoCore, Depends(get_pixelle_video)]
 MediaJobServiceDep = Annotated[MediaJobApplicationService, Depends(get_media_job_service)]
+MediaAssetServiceDep = Annotated[AssetService, Depends(get_media_asset_service)]

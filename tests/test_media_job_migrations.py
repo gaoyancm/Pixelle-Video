@@ -53,7 +53,7 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
         del version
         with engine.connect() as connection:
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0002_add_media_job_retry_lineage"
+        assert revision == "0003_add_media_assets"
     finally:
         engine.dispose()
 
@@ -169,5 +169,54 @@ def test_retry_lineage_migration_downgrade_and_reupgrade(tmp_path: Path) -> None
     try:
         columns = {column["name"] for column in inspect(engine).get_columns("media_jobs")}
         assert "retry_of_job_id" in columns
+    finally:
+        engine.dispose()
+
+
+def test_media_assets_migration_from_0002_round_trip(tmp_path: Path) -> None:
+    database_path = tmp_path / "assets-round-trip.db"
+    config = alembic_config(database_path)
+    command.upgrade(config, "0002_add_media_job_retry_lineage")
+    engine = create_engine(sync_sqlite_url(database_path))
+    try:
+        assert set(inspect(engine).get_table_names()) == {"alembic_version", "media_jobs"}
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(sync_sqlite_url(database_path))
+    try:
+        inspector = inspect(engine)
+        assert {"media_assets", "media_job_assets"} <= set(inspector.get_table_names())
+        assert {
+            "id",
+            "kind",
+            "state",
+            "backend",
+            "object_key",
+            "sha256",
+            "disabled_at",
+            "deleted_at",
+        } <= {column["name"] for column in inspector.get_columns("media_assets")}
+        assert len(inspector.get_foreign_keys("media_job_assets")) == 2
+    finally:
+        engine.dispose()
+
+    command.downgrade(config, "0002_add_media_job_retry_lineage")
+    engine = create_engine(sync_sqlite_url(database_path))
+    try:
+        inspector = inspect(engine)
+        assert "media_assets" not in inspector.get_table_names()
+        assert "media_job_assets" not in inspector.get_table_names()
+        assert "retry_of_job_id" in {
+            column["name"] for column in inspector.get_columns("media_jobs")
+        }
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(sync_sqlite_url(database_path))
+    try:
+        assert {"media_assets", "media_job_assets"} <= set(inspect(engine).get_table_names())
     finally:
         engine.dispose()

@@ -50,6 +50,7 @@ from api.routers import (
     health_router,
     image_router,
     llm_router,
+    media_assets_router,
     media_jobs_router,
     resources_router,
     tasks_router,
@@ -137,6 +138,7 @@ app.include_router(files_router, prefix=api_config.api_prefix)
 app.include_router(resources_router, prefix=api_config.api_prefix)
 app.include_router(frame_router, prefix=api_config.api_prefix)
 app.include_router(media_jobs_router, prefix=api_config.api_prefix)
+app.include_router(media_assets_router, prefix=api_config.api_prefix)
 
 
 @app.get("/")

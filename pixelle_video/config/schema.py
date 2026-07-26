@@ -178,6 +178,8 @@ class MediaJobsConfig(BaseModel):
     legacy_providers_enabled: bool = Field(default=False)
     managed_output_root: str = Field(default="output/media_jobs")
     managed_asset_root: str = Field(default="data/media_assets")
+    asset_store_root: str = Field(default="data/media_asset_store")
+    asset_max_upload_size: int = Field(default=100 * 1024 * 1024, gt=0)
     _config_base_dir: str | None = PrivateAttr(default=None)
 
     @property
@@ -189,7 +191,12 @@ class MediaJobsConfig(BaseModel):
 
         self._config_base_dir = base_dir
 
-    @field_validator("database_url", "managed_output_root", "managed_asset_root")
+    @field_validator(
+        "database_url",
+        "managed_output_root",
+        "managed_asset_root",
+        "asset_store_root",
+    )
     @classmethod
     def value_must_not_be_blank(cls, value: str) -> str:
         value = value.strip()
