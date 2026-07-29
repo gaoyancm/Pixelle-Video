@@ -30,6 +30,12 @@ from pixelle_video.media_assets import AssetNotFoundError, AssetUnavailableError
 from pixelle_video.media_jobs import IdempotencyConflictError, MediaJobsDisabledError
 from pixelle_video.media_jobs.models import MediaJob
 from pixelle_video.media_jobs.state_machine import JobStatus
+from pixelle_video.media_migration import (
+    CompatibilitySubmissionFacade,
+    LegacyCompositeSubmission,
+    PersistentLeafSubmission,
+    SubmissionRequest,
+)
 
 
 def _error(status: int, code: str, message: str) -> JSONResponse:
@@ -106,6 +112,38 @@ def _key(value: str | None) -> str:
         raise RequestValidationError([]) from None
 
 
+async def _reject_legacy_composite_submission(
+    _submission: LegacyCompositeSubmission,
+) -> tuple[MediaJob, bool]:
+    """Keep the explicit persistent endpoint closed to legacy execution."""
+
+    raise RuntimeError("Legacy composite submission is unavailable on this endpoint.")
+
+
+async def _submit_create_through_facade(
+    request: MediaJobRequest,
+    service: MediaJobServiceDep,
+    idempotency_key: str,
+) -> tuple[MediaJob, bool]:
+    async def submit_persistent_leaf(
+        submission: PersistentLeafSubmission,
+    ) -> tuple[MediaJob, bool]:
+        return await service.create(submission.request, idempotency_key)
+
+    facade = CompatibilitySubmissionFacade(
+        submit_persistent_leaf=submit_persistent_leaf,
+        submit_legacy_composite=_reject_legacy_composite_submission,
+    )
+    return await facade.submit(
+        SubmissionRequest(
+            entry_point="api.media_jobs.create",
+            workflow=request.workflow,
+            parameters=request.public_parameters(),
+            asset_id=request.asset_id,
+        )
+    )
+
+
 @router.post(
     "",
     response_model=MediaJobResponse,
@@ -118,7 +156,11 @@ async def create_media_job(
     service: MediaJobServiceDep,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
-    job, created = await service.create(request, _key(idempotency_key))
+    job, created = await _submit_create_through_facade(
+        request,
+        service,
+        _key(idempotency_key),
+    )
     response.status_code = 201 if created else 200
     return _view(job)
 
