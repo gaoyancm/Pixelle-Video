@@ -7,8 +7,13 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from api.dependencies import get_media_job_service
+from api.routers.media_jobs import router as media_jobs_router
+from api.services.media_jobs import MediaJobApplicationService
+from pixelle_video.config.schema import MediaJobsConfig
 from pixelle_video.media_jobs.contracts import MediaInputAsset, MediaJobCreate
 from pixelle_video.media_jobs.database import create_media_jobs_engine, sqlite_url_for_path
 from pixelle_video.media_jobs.executor import RecoverableComfyUIExecutor
@@ -214,6 +219,164 @@ async def test_each_workflow_submits_after_marker_and_persists_valid_output(
         assert submitted[0]["prompt"]["52"]["inputs"]["image"] == "inputs/uploaded.jpg"
     else:
         assert submitted[0]["prompt"]["89"]["inputs"]["text"] == f"test {workflow_type}"
+    await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("workflow_type", "asset_id"),
+    [
+        ("a800_wan22_t2v_33f", None),
+        ("gpu_4090_wan21_i2v_33f", "input.jpg"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_public_api_job_hands_off_to_real_worker_with_one_mock_submission(
+    tmp_path: Path,
+    workflow_type: str,
+    asset_id: str | None,
+) -> None:
+    repository, engine = await open_repository(tmp_path / f"handoff-{workflow_type}.db")
+    service = MediaJobApplicationService(
+        repository,
+        MediaJobsConfig(enabled=True),
+        node_selector=node_id_for,
+    )
+    app = FastAPI()
+    app.include_router(media_jobs_router, prefix="/api")
+    app.dependency_overrides[get_media_job_service] = lambda: service
+
+    body = {
+        "workflow": workflow_type,
+        "parameters": {
+            "prompt": "safe mock handoff",
+            "width": 512,
+            "height": 512,
+            "frame_count": 33,
+            "seed": 42,
+        },
+    }
+    if asset_id is not None:
+        body["asset_id"] = asset_id
+        asset_root = tmp_path / "assets"
+        asset_root.mkdir()
+        (asset_root / asset_id).write_bytes(b"mock-image")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/api/media/jobs",
+            json=body,
+            headers={"Idempotency-Key": f"handoff-{workflow_type}"},
+        )
+    assert response.status_code == 201
+    job_id = response.json()["job_id"]
+    created = await repository.get_job(job_id)
+    assert created is not None
+    assert created.node_id == node_id_for(workflow_type)
+
+    prompt_calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal prompt_calls
+        if request.url.path == "/upload/image":
+            return httpx.Response(200, json={"name": "input.jpg", "subfolder": ""})
+        if request.url.path == "/prompt":
+            prompt_calls += 1
+            return httpx.Response(200, json={"prompt_id": f"handoff-{workflow_type}"})
+        if request.url.path == f"/history/handoff-{workflow_type}":
+            return httpx.Response(
+                200,
+                json={
+                    f"handoff-{workflow_type}": {
+                        "status": {"status_str": "success", "completed": True},
+                        "outputs": {
+                            "output": {
+                                "videos": [
+                                    {
+                                        "filename": "result.mp4",
+                                        "subfolder": "",
+                                        "type": "output",
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                },
+            )
+        if request.url.path == "/view":
+            return httpx.Response(200, content=b"mock-video")
+        return httpx.Response(404)
+
+    adapter = ComfyUIAdapter(
+        nodes(),
+        workflow_root=WORKFLOW_ROOT,
+        transport=httpx.MockTransport(handler),
+    )
+    executor = RecoverableComfyUIExecutor(
+        repository,
+        adapter,
+        managed_asset_root=tmp_path / "assets",
+        managed_output_root=tmp_path / "outputs",
+        history_poll_interval_seconds=0,
+    )
+    worker = MediaJobWorker(
+        repository,
+        executor,
+        worker_id="handoff-worker",
+        lease_seconds=2,
+        heartbeat_seconds=0.1,
+    )
+    assert await worker.run_once() == 1
+    stored = await repository.get_job(job_id)
+    assert stored is not None
+    assert stored.status == JobStatus.SUCCEEDED.value
+    assert stored.node_id == node_id_for(workflow_type)
+    assert stored.comfyui_prompt_id == f"handoff-{workflow_type}"
+    assert prompt_calls == 1
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_prebound_node_mismatch_fails_before_provider_and_clears_lease(
+    tmp_path: Path,
+) -> None:
+    repository, engine = await open_repository(tmp_path / "node-mismatch.db")
+    create = make_create("a800_wan22_t2v_33f").model_copy(
+        update={"node_id": "different-a800"}
+    )
+    job = (await repository.create_job(create)).job
+    provider_calls = 0
+
+    async def forbidden_provider(_request: httpx.Request) -> httpx.Response:
+        nonlocal provider_calls
+        provider_calls += 1
+        return httpx.Response(500)
+
+    worker = make_worker(repository, tmp_path, forbidden_provider)
+    assert await worker.run_once() == 1
+    stored = await repository.get_job(job.job_id)
+    assert stored is not None
+    assert stored.status == JobStatus.FAILED.value
+    assert stored.error_category == ErrorCategory.VALIDATION.value
+    assert stored.error_message is not None
+    assert stored.error_message
+    assert "persisted node_id does not match selected ComfyUI node" in stored.error_message
+    for sensitive in (
+        "different-a800",
+        "http://mock-comfyui",
+        "Authorization",
+        "api_key",
+        "credential",
+    ):
+        assert sensitive not in stored.error_message
+    assert stored.submit_started_at is None
+    assert stored.comfyui_prompt_id is None
+    assert stored.lease_owner is None
+    assert stored.lease_expires_at is None
+    assert stored.heartbeat_at is None
+    assert provider_calls == 0
     await engine.dispose()
 
 

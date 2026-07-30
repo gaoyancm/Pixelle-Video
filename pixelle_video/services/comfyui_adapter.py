@@ -63,6 +63,21 @@ class PreparedComfyUISubmission:
     workflow: dict[str, Any]
 
 
+def select_comfyui_node(
+    nodes: Sequence[ComfyUINodeConfig],
+    workflow_type: str,
+) -> ComfyUINodeConfig:
+    """Select the first enabled configured node for a registered workflow."""
+
+    get_workflow_spec(workflow_type)
+    for node in nodes:
+        if node.enabled and workflow_type in node.workflow_types:
+            return node
+    raise RuntimeError(
+        f"No enabled ComfyUI node is configured for workflow type '{workflow_type}'"
+    )
+
+
 class ComfyUIAdapter:
     """Route workflows to configured nodes and speak the native ComfyUI API."""
 
@@ -97,13 +112,7 @@ class ComfyUIAdapter:
     def select_node(self, workflow_type: str) -> ComfyUINodeConfig:
         """Select the first enabled node that declares the workflow type."""
 
-        get_workflow_spec(workflow_type)
-        for node in self._nodes.values():
-            if node.enabled and workflow_type in node.workflow_types:
-                return node
-        raise RuntimeError(
-            f"No enabled ComfyUI node is configured for workflow type '{workflow_type}'"
-        )
+        return select_comfyui_node(tuple(self._nodes.values()), workflow_type)
 
     def build_workflow(
         self,

@@ -57,7 +57,12 @@ TERMINAL_STATUSES = frozenset(
 
 LEGAL_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.QUEUED: frozenset(
-        {JobStatus.SUBMITTING, JobStatus.CANCELLED, JobStatus.TIMED_OUT}
+        {
+            JobStatus.SUBMITTING,
+            JobStatus.FAILED,
+            JobStatus.CANCELLED,
+            JobStatus.TIMED_OUT,
+        }
     ),
     JobStatus.SUBMITTING: frozenset(
         {

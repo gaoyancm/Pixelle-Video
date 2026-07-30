@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from datetime import timedelta
 
 from api.schemas.media_jobs import MediaJobRequest
@@ -13,6 +14,7 @@ from pixelle_video.media_jobs import (
     MediaInputAsset,
     MediaJobCreate,
     MediaJobRepository,
+    MediaJobsDisabledError,
 )
 from pixelle_video.media_jobs.models import MediaJob, utc_now
 from pixelle_video.media_jobs.state_machine import JobStatus, can_cancel
@@ -44,13 +46,20 @@ class MediaJobApplicationService:
         repository: MediaJobRepository,
         config: MediaJobsConfig,
         assets: AssetService | None = None,
+        *,
+        node_selector: Callable[[str], str],
     ):
         self.repository = repository
         self.config = config
         self.assets = assets
+        self.node_selector = node_selector
 
     async def create(self, request: MediaJobRequest, idempotency_key: str) -> tuple[MediaJob, bool]:
         spec = get_workflow_spec(request.workflow)
+        try:
+            node_id = self.node_selector(spec.workflow_type)
+        except RuntimeError:
+            raise MediaJobsDisabledError from None
         if request.asset_id is not None and self.assets is not None:
             asset = await self.assets.get_available_input(request.asset_id)
             if asset.media_type != "image":
@@ -60,6 +69,7 @@ class MediaJobApplicationService:
             workflow_key=spec.workflow_key,
             executor_kind="private_comfyui",
             provider="private_comfyui",
+            node_id=node_id,
             input_json=request.public_parameters(),
             input_assets_json=(
                 [MediaInputAsset(asset_id=request.asset_id, role="input_image")]

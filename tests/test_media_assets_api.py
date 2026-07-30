@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from api.app import app
 from api.dependencies import get_media_asset_service, get_media_job_service
@@ -11,7 +11,8 @@ from api.services.media_jobs import MediaJobApplicationService
 from pixelle_video.config.schema import MediaJobsConfig
 from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
 from pixelle_video.media_assets.models import MediaJobAsset
-from pixelle_video.media_jobs.models import Base
+from pixelle_video.media_jobs.database import create_media_jobs_engine, sqlite_url_for_path
+from pixelle_video.media_jobs.models import Base, MediaJob
 from pixelle_video.media_jobs.repository import MediaJobRepository
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 32
@@ -19,7 +20,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 32
 
 @pytest.fixture
 async def api_context(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'api.db'}")
+    engine = create_media_jobs_engine(sqlite_url_for_path(tmp_path / "api.db"))
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -30,6 +31,9 @@ async def api_context(tmp_path):
         MediaJobRepository(factory),
         MediaJobsConfig(enabled=True),
         assets,
+        node_selector=lambda workflow: (
+            "gpu-4090" if workflow.startswith("gpu_4090") else "a800"
+        ),
     )
     app.dependency_overrides[get_media_asset_service] = lambda: assets
     app.dependency_overrides[get_media_job_service] = lambda: jobs
@@ -97,6 +101,7 @@ async def test_new_job_requires_real_available_asset_and_creates_relation(api_co
         headers={"Idempotency-Key": "upload-job"},
         files={"file": ("client.png", PNG, "image/png")},
     )
+    assert upload.status_code == 201
     asset_id = upload.json()["asset_id"]
     request = {
         "workflow": "gpu_4090_wan21_i2v_33f",
@@ -109,17 +114,32 @@ async def test_new_job_requires_real_available_asset_and_creates_relation(api_co
         json=request,
     )
     assert created.status_code == 201
+    job_id = created.json()["job_id"]
     async with factory() as session:
+        assert (await session.execute(text("PRAGMA foreign_keys"))).scalar_one() == 1
+        assert await session.get(MediaJob, job_id) is not None
         relation = (
             await session.execute(
                 select(MediaJobAsset).where(
-                    MediaJobAsset.job_id == created.json()["job_id"]
+                    MediaJobAsset.job_id == job_id
                 )
             )
         ).scalar_one()
+        assert list((await session.execute(text("PRAGMA foreign_key_check"))).all()) == []
     assert relation.asset_id == asset_id
     assert relation.direction == "input"
     assert relation.position == 0
+
+    replay = await client.post(
+        "/api/media/jobs",
+        headers={"Idempotency-Key": "job-1"},
+        json=request,
+    )
+    assert replay.status_code == 200
+    assert replay.json()["job_id"] == job_id
+    async with factory() as session:
+        assert len(list((await session.execute(select(MediaJob))).scalars())) == 1
+        assert len(list((await session.execute(select(MediaJobAsset))).scalars())) == 1
 
     path_value = await client.post(
         "/api/media/jobs",

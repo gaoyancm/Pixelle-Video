@@ -130,6 +130,7 @@ class MediaJobRepository:
         async with self._session_factory() as session:
             try:
                 async with session.begin():
+                    input_relations = []
                     for position, reference in enumerate(create.input_assets_json):
                         result = await session.execute(
                             update(MediaAsset)
@@ -144,7 +145,7 @@ class MediaJobRepository:
                         asset = result.scalar_one_or_none()
                         if asset is None:
                             raise ValueError("input asset is unavailable")
-                        session.add(
+                        input_relations.append(
                             MediaJobAsset(
                                 job_id=job.job_id,
                                 asset_id=asset.id,
@@ -154,6 +155,8 @@ class MediaJobRepository:
                             )
                         )
                     session.add(job)
+                    await session.flush()
+                    session.add_all(input_relations)
                     await session.flush()
                 return CreateJobResult(job=job, created=True)
             except IntegrityError:

@@ -14,11 +14,16 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from api.dependencies import get_media_job_service
 from api.routers.media_jobs import router
 from api.services.media_jobs import MediaJobApplicationService
-from pixelle_video.config.schema import MediaJobsConfig
+from pixelle_video.config.schema import ComfyUINodeConfig, MediaJobsConfig
 from pixelle_video.media_jobs import MediaJobsDisabledError
 from pixelle_video.media_jobs.models import Base, MediaJob
 from pixelle_video.media_jobs.repository import MediaJobRepository
 from pixelle_video.media_jobs.state_machine import ErrorCategory, JobStatus
+from pixelle_video.services.comfyui_adapter import ComfyUIAdapter, select_comfyui_node
+
+
+def node_id_for_workflow(workflow: str) -> str:
+    return "gpu-4090" if workflow.startswith("gpu_4090") else "a800"
 
 
 @pytest.fixture
@@ -30,6 +35,7 @@ async def api_client(tmp_path: Path):
     service = MediaJobApplicationService(
         MediaJobRepository(sessions),
         MediaJobsConfig(enabled=True, database_url="sqlite+aiosqlite:///:memory:"),
+        node_selector=node_id_for_workflow,
     )
     app = FastAPI()
     app.include_router(router, prefix="/api")
@@ -55,7 +61,7 @@ def request(workflow: str = "a800_wan22_t2v_33f") -> dict:
     ],
 )
 async def test_four_registered_workflows_create_without_worker(api_client, workflow: str):
-    client, _, _ = api_client
+    client, _, sessions = api_client
     body = request(workflow)
     if workflow.startswith("gpu_4090"):
         body["asset_id"] = "asset-1"
@@ -65,6 +71,11 @@ async def test_four_registered_workflows_create_without_worker(api_client, workf
     assert response.status_code == 201
     assert response.json()["workflow"] == workflow
     assert response.json()["status"] == "queued"
+    assert "node_id" not in response.json()
+    async with sessions() as session:
+        stored = await session.get(MediaJob, response.json()["job_id"])
+    assert stored is not None
+    assert stored.node_id == node_id_for_workflow(workflow)
 
 
 @pytest.mark.parametrize(
@@ -72,6 +83,7 @@ async def test_four_registered_workflows_create_without_worker(api_client, workf
     [
         {"workflow": "not-allowed"},
         {**request(), "job_id": "client-controlled"},
+        {**request(), "node_id": "client-controlled"},
         {**request(), "retry_of_job_id": "client-controlled"},
         {**request(), "parameters": {"output_prefix": "C:/secret"}},
         {**request(), "asset_ids": ["asset-1"]},
@@ -97,7 +109,7 @@ async def test_create_requires_strict_idempotency_header(api_client):
 
 
 async def test_create_idempotency_and_conflict(api_client):
-    client, _, _ = api_client
+    client, _, sessions = api_client
     headers = {"Idempotency-Key": "same"}
     first = await client.post("/api/media/jobs", json=request(), headers=headers)
     second = await client.post("/api/media/jobs", json=request(), headers=headers)
@@ -111,6 +123,10 @@ async def test_create_idempotency_and_conflict(api_client):
     assert second.json()["job_id"] == first.json()["job_id"]
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "idempotency_conflict"
+    async with sessions() as session:
+        stored = await session.get(MediaJob, first.json()["job_id"])
+    assert stored is not None
+    assert stored.node_id == "a800"
 
 
 async def test_concurrent_create_has_one_row(api_client):
@@ -221,6 +237,112 @@ async def test_retry_creates_new_lineage_and_isolated_idempotency(api_client):
     assert first.json()["job_id"] != source_id
     assert first.json()["retry_of_job_id"] == source_id
     assert (await client.get(f"/api/media/jobs/{source_id}")).json()["status"] == "failed"
+    async with sessions() as session:
+        parent = await session.get(MediaJob, source_id)
+        child = await session.get(MediaJob, first.json()["job_id"])
+    assert parent is not None and child is not None
+    assert parent.node_id == child.node_id == "a800"
+
+
+async def test_create_without_matching_enabled_node_is_redacted_and_inserts_nothing(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{(tmp_path / 'no-node.db').as_posix()}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+
+    def no_node(_workflow: str) -> str:
+        raise RuntimeError("private node details must stay hidden")
+
+    provider_calls: list[str] = []
+
+    async def forbidden_provider(request: httpx.Request) -> httpx.Response:
+        provider_calls.append(request.url.path)
+        return httpx.Response(500)
+
+    provider_transport = httpx.MockTransport(forbidden_provider)
+    service = MediaJobApplicationService(
+        MediaJobRepository(sessions),
+        MediaJobsConfig(enabled=True),
+        node_selector=no_node,
+    )
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    app.dependency_overrides[get_media_job_service] = lambda: service
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/api/media/jobs",
+            json=request(),
+            headers={"Idempotency-Key": "no-node"},
+        )
+    async with sessions() as session:
+        count = (await session.execute(select(func.count()).select_from(MediaJob))).scalar_one()
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "service_unavailable",
+            "message": "Persistent media jobs are unavailable.",
+        }
+    }
+    assert count == 0
+    assert provider_calls == []
+    assert provider_transport is not None
+    await engine.dispose()
+
+
+async def test_api_binding_matches_adapter_first_enabled_node(api_client):
+    _, _, sessions = api_client
+    configured_nodes = [
+        {
+            "id": "disabled-first",
+            "name": "disabled",
+            "base_url": "http://disabled.invalid",
+            "workflow_types": ["a800_wan22_t2v_33f"],
+            "enabled": False,
+        },
+        {
+            "id": "a800",
+            "name": "selected",
+            "base_url": "http://mock.invalid",
+            "workflow_types": ["a800_wan22_t2v_33f"],
+            "enabled": True,
+        },
+        {
+            "id": "later-match",
+            "name": "later",
+            "base_url": "http://later.invalid",
+            "workflow_types": ["a800_wan22_t2v_33f"],
+            "enabled": True,
+        },
+    ]
+    adapter = ComfyUIAdapter(configured_nodes)
+    parsed_nodes = [ComfyUINodeConfig(**node) for node in configured_nodes]
+    expected = select_comfyui_node(parsed_nodes, "a800_wan22_t2v_33f").id
+    assert adapter.select_node("a800_wan22_t2v_33f").id == expected
+    service = MediaJobApplicationService(
+        MediaJobRepository(sessions),
+        MediaJobsConfig(enabled=True),
+        node_selector=lambda workflow: select_comfyui_node(parsed_nodes, workflow).id,
+    )
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    app.dependency_overrides[get_media_job_service] = lambda: service
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/api/media/jobs",
+            json=request(),
+            headers={"Idempotency-Key": "multi-node"},
+        )
+    async with sessions() as session:
+        stored = await session.get(MediaJob, response.json()["job_id"])
+    assert response.status_code == 201
+    assert expected == "a800"
+    assert stored is not None and stored.node_id == expected
 
 
 @pytest.mark.parametrize("workflow", ["gpu_4090_wan21_i2v_33f", "gpu_4090_wan21_i2v_81f"])
@@ -592,9 +714,13 @@ def test_openapi_contains_exactly_the_five_phase2c_operations():
     assert operations == 5
     schema = app.openapi()
     request_schema = schema["components"]["schemas"]["MediaJobRequest"]
-    serialized = str(request_schema)
-    assert "asset_id" in serialized
-    assert "asset_ids" not in serialized
+    response_schema = schema["components"]["schemas"]["MediaJobResponse"]
+    request_properties = request_schema["properties"]
+    response_properties = response_schema["properties"]
+    assert "asset_id" in request_properties
+    assert "asset_ids" not in request_properties
+    assert "node_id" not in request_properties
+    assert "node_id" not in response_properties
     forbidden = {
         "submission_token",
         "request_hash",

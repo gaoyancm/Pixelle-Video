@@ -27,6 +27,7 @@ from pixelle_video.config.manager import ConfigManager
 from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
 from pixelle_video.media_jobs import MediaJobRepository, MediaJobsDatabase
 from pixelle_video.service import PixelleVideoCore
+from pixelle_video.services.comfyui_adapter import select_comfyui_node
 
 # Global Pixelle-Video instance
 _pixelle_video_instance: PixelleVideoCore = None
@@ -69,11 +70,20 @@ async def get_media_job_service() -> MediaJobApplicationService:
 
     global _media_jobs_database, _media_jobs_service
     if _media_jobs_service is None:
-        config = ConfigManager().config.media_jobs
+        manager = ConfigManager()
+        config = manager.config.media_jobs
         _media_jobs_database = MediaJobsDatabase(config)
         repository = MediaJobRepository(_media_jobs_database.connect())
         assets = await get_media_asset_service()
-        _media_jobs_service = MediaJobApplicationService(repository, config, assets)
+        _media_jobs_service = MediaJobApplicationService(
+            repository,
+            config,
+            assets,
+            node_selector=lambda workflow_type: select_comfyui_node(
+                manager.config.comfyui.nodes,
+                workflow_type,
+            ).id,
+        )
     return _media_jobs_service
 
 

@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import pixelle_video.media_assets.models as _media_assets_models  # noqa: F401
 from pixelle_video.media_jobs.contracts import (
     MediaInputAsset,
     MediaJobCreate,
