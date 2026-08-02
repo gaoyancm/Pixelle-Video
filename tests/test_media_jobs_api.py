@@ -96,7 +96,9 @@ async def test_create_rejects_non_allowlisted_or_internal_input(api_client, body
         "/api/media/jobs", json=body, headers={"Idempotency-Key": "valid-key"}
     )
     assert response.status_code == 422
-    expected = "workflow_not_allowed" if body.get("workflow") == "not-allowed" else "invalid_request"
+    expected = (
+        "workflow_not_allowed" if body.get("workflow") == "not-allowed" else "invalid_request"
+    )
     assert response.json()["error"]["code"] == expected
 
 
@@ -169,8 +171,13 @@ async def test_get_list_filter_pagination_and_no_internal_fields(api_client):
     assert [item["job_id"] for item in filtered.json()["items"]] == [ids[0]]
     detail = (await client.get(f"/api/media/jobs/{ids[0]}")).json()
     forbidden = {
-        "submission_token", "request_hash", "lease_owner", "workflow_key",
-        "idempotency_key", "relative_path", "comfyui_prompt_id",
+        "submission_token",
+        "request_hash",
+        "lease_owner",
+        "workflow_key",
+        "idempotency_key",
+        "relative_path",
+        "comfyui_prompt_id",
     }
     assert forbidden.isdisjoint(detail)
     assert detail["error"]["message"] == "The media job did not complete successfully."
@@ -226,7 +233,7 @@ async def test_retry_creates_new_lineage_and_isolated_idempotency(api_client):
         await session.execute(
             update(MediaJob)
             .where(MediaJob.job_id == source_id)
-            .values(status="failed", error_category=ErrorCategory.INTERNAL.value)
+            .values(status="failed", error_category=ErrorCategory.INTERNAL.value, priority=2)
         )
     headers = {"Idempotency-Key": "shared"}
     first = await client.post(f"/api/media/jobs/{source_id}/retry", headers=headers)
@@ -242,6 +249,7 @@ async def test_retry_creates_new_lineage_and_isolated_idempotency(api_client):
         child = await session.get(MediaJob, first.json()["job_id"])
     assert parent is not None and child is not None
     assert parent.node_id == child.node_id == "a800"
+    assert parent.priority == child.priority == 2
 
 
 async def test_create_without_matching_enabled_node_is_redacted_and_inserts_nothing(tmp_path):
@@ -528,9 +536,7 @@ async def test_pagination_is_stable_complete_filtered_and_does_not_leak_extra_ro
     assert all("total" not in page for page in (first, second, last))
 
     filtered = (
-        await client.get(
-            "/api/media/jobs", params={"status": "failed", "limit": 2, "offset": 0}
-        )
+        await client.get("/api/media/jobs", params={"status": "failed", "limit": 2, "offset": 0})
     ).json()
     expected_failed = [job_id for job_id in expected if job_id in ids[:3]]
     assert [item["job_id"] for item in filtered["items"]] == expected_failed[:2]
@@ -670,11 +676,7 @@ def test_router_ast_dependencies_and_app_boundaries_remain_isolated():
         for node in ast.walk(tree)
         if isinstance(node, ast.Import)
         for alias in node.names
-    } | {
-        node.module or ""
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    }
+    } | {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
     forbidden = (
         "api.tasks",
         "pixelle_video.media_jobs.worker",

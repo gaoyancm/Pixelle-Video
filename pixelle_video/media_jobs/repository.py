@@ -90,6 +90,7 @@ class MediaJobRepository:
             output_metadata=[],
             retry_count=0,
             retry_of_job_id=create.retry_of_job_id,
+            priority=create.priority,
             version=1,
             remote_status=RemoteJobStatus.UNKNOWN.value,
             remote_termination_status=RemoteTerminationStatus.UNKNOWN.value,
@@ -246,6 +247,7 @@ class MediaJobRepository:
                         idempotency_key=idempotency_key,
                         deadline_at=deadline_at,
                         retry_of_job_id=source.job_id,
+                        priority=source.priority,
                     )
                     request_hash = compute_request_hash(create.immutable_request_payload())
                     child = MediaJob(
@@ -267,6 +269,7 @@ class MediaJobRepository:
                         output_metadata=[],
                         retry_count=source.retry_count + 1,
                         retry_of_job_id=source.job_id,
+                        priority=create.priority,
                         version=1,
                         remote_status=RemoteJobStatus.UNKNOWN.value,
                         remote_termination_status=RemoteTerminationStatus.UNKNOWN.value,
@@ -371,9 +374,7 @@ class MediaJobRepository:
         error_message: str | None = None,
     ) -> MediaJob:
         if expected_status is JobStatus.SUBMITTING and target_status is JobStatus.QUEUED:
-            raise ValueError(
-                "submitting jobs may only be requeued by requeue_unsubmitted_job"
-            )
+            raise ValueError("submitting jobs may only be requeued by requeue_unsubmitted_job")
         validate_transition(expected_status, target_status)
         now = utc_now()
         values: dict = {"status": target_status.value}
@@ -401,9 +402,7 @@ class MediaJobRepository:
     ) -> MediaJob:
         """Atomically recover work that crashed before remote submission began."""
 
-        owner_condition = (
-            (MediaJob.lease_owner == lease_owner,) if lease_owner is not None else ()
-        )
+        owner_condition = (MediaJob.lease_owner == lease_owner,) if lease_owner is not None else ()
         return await self._cas_update(
             job_id,
             expected_status=JobStatus.SUBMITTING,
@@ -664,9 +663,7 @@ class MediaJobRepository:
             expected_version=expected_version,
             values={
                 "error_category": category.value,
-                "error_message": sanitize_error_message(
-                    message, sensitive_values=sensitive_values
-                ),
+                "error_message": sanitize_error_message(message, sensitive_values=sensitive_values),
             },
         )
 
@@ -844,7 +841,5 @@ class MediaJobRepository:
                 result = await session.execute(statement)
                 job = result.scalar_one_or_none()
                 if job is None:
-                    raise CASConflictError(
-                        "media job status or version changed before the update"
-                    )
+                    raise CASConflictError("media job status or version changed before the update")
         return job

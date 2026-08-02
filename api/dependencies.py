@@ -22,8 +22,10 @@ from typing import Annotated
 from fastapi import Depends
 from loguru import logger
 
+from api.services.management import ManagementApplicationService
 from api.services.media_jobs import MediaJobApplicationService
 from pixelle_video.config.manager import ConfigManager
+from pixelle_video.management import ManagementRepository
 from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
 from pixelle_video.media_jobs import MediaJobRepository, MediaJobsDatabase
 from pixelle_video.service import PixelleVideoCore
@@ -34,22 +36,23 @@ _pixelle_video_instance: PixelleVideoCore = None
 _media_jobs_database: MediaJobsDatabase | None = None
 _media_jobs_service: MediaJobApplicationService | None = None
 _media_assets_service: AssetService | None = None
+_management_service: ManagementApplicationService | None = None
 
 
 async def get_pixelle_video() -> PixelleVideoCore:
     """
     Get Pixelle-Video core instance (dependency injection)
-    
+
     Returns:
         PixelleVideoCore instance
     """
     global _pixelle_video_instance
-    
+
     if _pixelle_video_instance is None:
         _pixelle_video_instance = PixelleVideoCore()
         await _pixelle_video_instance.initialize()
         logger.info("✅ Pixelle-Video initialized for API")
-    
+
     return _pixelle_video_instance
 
 
@@ -60,8 +63,9 @@ async def shutdown_pixelle_video():
         logger.info("Shutting down Pixelle-Video...")
         await _pixelle_video_instance.cleanup()
         _pixelle_video_instance = None
-    
+
     from pixelle_video.services.frame_html import HTMLFrameGenerator
+
     await HTMLFrameGenerator.close_browser()
 
 
@@ -108,16 +112,41 @@ async def get_media_asset_service() -> AssetService:
     return _media_assets_service
 
 
+async def get_management_service() -> ManagementApplicationService:
+    """Lazily build the management service without migration or external calls."""
+
+    global _management_service, _media_jobs_database
+    if _management_service is None:
+        manager = ConfigManager()
+        config = manager.config.media_jobs
+        if _media_jobs_database is None:
+            _media_jobs_database = MediaJobsDatabase(config)
+        sessions = _media_jobs_database.connect()
+        assets = await get_media_asset_service()
+        _management_service = ManagementApplicationService(
+            ManagementRepository(sessions),
+            config,
+            assets,
+            node_selector=lambda workflow_type: select_comfyui_node(
+                manager.config.comfyui.nodes, workflow_type
+            ).id,
+            configured_nodes=manager.config.comfyui.nodes,
+        )
+    return _management_service
+
+
 async def shutdown_media_jobs() -> None:
-    global _media_assets_service, _media_jobs_database, _media_jobs_service
+    global _management_service, _media_assets_service, _media_jobs_database, _media_jobs_service
     if _media_jobs_database is not None:
         await _media_jobs_database.dispose()
     _media_jobs_database = None
     _media_jobs_service = None
     _media_assets_service = None
+    _management_service = None
 
 
 # Type alias for dependency injection
 PixelleVideoDep = Annotated[PixelleVideoCore, Depends(get_pixelle_video)]
 MediaJobServiceDep = Annotated[MediaJobApplicationService, Depends(get_media_job_service)]
 MediaAssetServiceDep = Annotated[AssetService, Depends(get_media_asset_service)]
+ManagementServiceDep = Annotated[ManagementApplicationService, Depends(get_management_service)]

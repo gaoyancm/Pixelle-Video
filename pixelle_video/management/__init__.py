@@ -23,6 +23,8 @@ from .models import (
     Project,
 )
 from .repository import (
+    BatchSubmission,
+    BatchSubmissionResult,
     DraftAssetReference,
     DraftItem,
     ManagementConflictError,
@@ -33,10 +35,14 @@ from .repository import (
     ManagementUnitOfWork,
     OperationMatch,
     OperationMatchKind,
+    SubmissionIndeterminateError,
+    SubmissionItem,
 )
 
 __all__ = [
     "BatchState",
+    "BatchSubmission",
+    "BatchSubmissionResult",
     "DraftAssetReference",
     "DraftItem",
     "ManagementConflictError",
@@ -56,6 +62,8 @@ __all__ = [
     "ProductionItemAsset",
     "ProductionItemAttempt",
     "Project",
+    "SubmissionIndeterminateError",
+    "SubmissionItem",
     "batch_content_is_editable",
     "effective_priority",
     "freeze_generation_parameters",

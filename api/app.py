@@ -17,7 +17,7 @@ Main FastAPI app with all routers and middleware.
 
 Run this script to start the FastAPI server:
     uv run python api/app.py
-    
+
 Or with custom settings:
     uv run python api/app.py --host 0.0.0.0 --port 8080 --reload
 """
@@ -50,6 +50,7 @@ from api.routers import (
     health_router,
     image_router,
     llm_router,
+    management_router,
     media_assets_router,
     media_jobs_router,
     resources_router,
@@ -64,16 +65,16 @@ from api.tasks import task_manager
 async def lifespan(app: FastAPI):
     """
     Application lifespan manager
-    
+
     Handles startup and shutdown events.
     """
     # Startup
     logger.info("🚀 Starting Pixelle-Video API...")
     await task_manager.start()
     logger.info("✅ Pixelle-Video API started successfully\n")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("🛑 Shutting down Pixelle-Video API...")
     await task_manager.stop()
@@ -139,6 +140,7 @@ app.include_router(resources_router, prefix=api_config.api_prefix)
 app.include_router(frame_router, prefix=api_config.api_prefix)
 app.include_router(media_jobs_router, prefix=api_config.api_prefix)
 app.include_router(media_assets_router, prefix=api_config.api_prefix)
+app.include_router(management_router, prefix=api_config.api_prefix)
 
 
 @app.get("/")
@@ -159,21 +161,21 @@ async def root():
             "files": f"{api_config.api_prefix}/files",
             "resources": f"{api_config.api_prefix}/resources",
             "frame": f"{api_config.api_prefix}/frame",
-        }
+        },
     }
 
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Start Pixelle-Video API Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
-    
+
     args = parser.parse_args()
-    
+
     # Print startup banner
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
@@ -186,7 +188,7 @@ ReDoc: http://{args.host}:{args.port}/redoc
 
 Press Ctrl+C to stop the server
 """)
-    
+
     # Start server
     uvicorn.run(
         "api.app:app",
