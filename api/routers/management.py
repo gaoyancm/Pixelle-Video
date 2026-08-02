@@ -204,7 +204,10 @@ async def list_batches(
 
 @router.get("/batches/{batch_id}", response_model=BatchResponse)
 async def get_batch(batch_id: str, service: ManagementServiceDep):
-    return _batch(await service.get_batch(batch_id), service)
+    response = _batch(await service.get_batch(batch_id), service)
+    return BatchResponse.model_validate(
+        {**response.model_dump(), "items": await service.item_payloads(batch_id)}
+    )
 
 
 @router.patch("/batches/{batch_id}", response_model=BatchResponse)

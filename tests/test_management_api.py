@@ -396,6 +396,9 @@ async def test_item_complete_replacement_preserves_ids_and_preflight_is_read_onl
     )
     assert replaced.status_code == 200
     assert [item["item_id"] for item in replaced.json()["items"]] == [ids[1]]
+    reloaded = await client.get(f"/api/admin/batches/{batch['batch_id']}")
+    assert reloaded.status_code == 200
+    assert reloaded.json()["items"] == replaced.json()["items"]
 
     async with sessions() as session:
         before = {

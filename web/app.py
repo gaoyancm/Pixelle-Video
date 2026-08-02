@@ -26,7 +26,7 @@ _project_root = _script_dir.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-import streamlit as st
+import streamlit as st  # noqa: E402
 
 # Setup page config (must be first Streamlit command)
 st.set_page_config(
@@ -40,21 +40,49 @@ st.set_page_config(
 def main():
     """Main entry point with navigation"""
     # Define pages using st.Page
-    home_page = st.Page(
-        "pages/1_🎬_Home.py",
-        title="Home",
-        icon="🎬",
-        default=True
+    home_page = st.Page("pages/1_🎬_Home.py", title="Home", icon="🎬", default=True)
+
+    history_page = st.Page("pages/2_📚_History.py", title="History", icon="📚")
+
+    projects_page = st.Page(
+        "pages/3_🗂️_Projects.py",
+        title="Projects",
+        icon="🗂️",
     )
-    
-    history_page = st.Page(
-        "pages/2_📚_History.py",
-        title="History",
-        icon="📚"
+    batches_page = st.Page(
+        "pages/4_📦_Batches.py",
+        title="Batches",
+        icon="📦",
     )
-    
+    editor_page = st.Page(
+        "pages/5_📝_Batch_Editor.py",
+        title="Batch Editor",
+        icon="📝",
+    )
+    monitor_page = st.Page(
+        "pages/6_📊_Batch_Monitor.py",
+        title="Batch Monitor",
+        icon="📊",
+    )
+    results_page = st.Page(
+        "pages/7_✅_Results.py",
+        title="Results",
+        icon="✅",
+    )
+
     # Set up navigation and run
-    pg = st.navigation([home_page, history_page])
+    pg = st.navigation(
+        {
+            "Create": [home_page, history_page],
+            "Management": [
+                projects_page,
+                batches_page,
+                editor_page,
+                monitor_page,
+                results_page,
+            ],
+        }
+    )
     pg.run()
 
 

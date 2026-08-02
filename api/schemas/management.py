@@ -63,6 +63,7 @@ class BatchResponse(StrictModel):
     archived: bool
     created_at: datetime
     updated_at: datetime
+    items: list[DraftItemResponse] | None = None
 
 
 class BatchList(StrictModel):
