@@ -5,13 +5,15 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from web.management.client import ManagementAPIError
 from web.management.runtime import set_management_client_factory
 
 
 class FakeManagementClient:
-    def __init__(self, *, batch_state="draft"):
+    def __init__(self, *, batch_state="draft", items=None):
         self.calls = []
         self.batch_state = batch_state
+        self.items = items
 
     def _call(self, name, *args):
         self.calls.append((name, *args))
@@ -92,7 +94,9 @@ class FakeManagementClient:
             "default_priority": "normal",
             "version": 3,
             "archived": False,
-            "items": [
+            "items": self.items
+            if self.items is not None
+            else [
                 {
                     "item_id": "i1",
                     "position": 0,
@@ -304,6 +308,7 @@ def test_editor_save_sends_full_item_collection_and_latest_server_version():
             "assets": [],
         }
     ]
+    assert len([call for call in fake.calls if call[0] == "get_batch"]) >= 2
 
 
 def test_monitor_distinguishes_cancel_request_truth_and_has_no_fake_gpu_percentage():
@@ -357,3 +362,231 @@ def test_monitor_actions_use_batch_operations_stable_keys_and_zero_retry_is_succ
     retry_button = next(button for button in app.button if button.label == "Retry eligible items")
     retry_button.click().run(timeout=10)
     assert [call for call in fake.calls if call[0] == "retry_eligible"][-1][1:3] == ("b1", 3)
+
+
+def test_editor_shows_structured_preflight_issues_and_blocks_unsaved_changes():
+    class IssueClient(FakeManagementClient):
+        def preflight(self, batch_id, expected_version):
+            self._call("preflight", batch_id, expected_version)
+            return {
+                "valid": False,
+                "batch_version": expected_version,
+                "issues": [
+                    {
+                        "code": "missing_prompt",
+                        "message": "Prompt is required.",
+                        "item_id": "i1",
+                        "position": 0,
+                        "field": "parameters.prompt",
+                    }
+                ],
+            }
+
+    fake = IssueClient()
+    set_management_client_factory(lambda: fake)
+    app = AppTest.from_file(str(page("5")))
+    app.session_state["management_batch_id"] = "b1"
+    app.run(timeout=10)
+    next(button for button in app.button if button.label == "Run preflight").click().run(timeout=10)
+    rendered = " ".join(
+        str(element.value) for collection in (app.warning, app.markdown) for element in collection
+    )
+    assert "missing_prompt" in rendered
+    assert "position=0" in rendered and "parameters.prompt" in rendered
+
+    next(field for field in app.text_input if field.label == "Batch name").set_value(
+        "Unsaved name"
+    ).run(timeout=10)
+    assert next(button for button in app.button if button.label == "Run preflight").disabled
+    assert next(button for button in app.button if button.label == "Submit batch").disabled
+    assert "Save the current draft" in " ".join(str(item.value) for item in app.info)
+
+
+def test_editor_submission_indeterminate_reuses_same_intent_without_blind_resubmit():
+    class IndeterminateClient(FakeManagementClient):
+        def submit(self, batch_id, expected_version, key):
+            self._call("submit", batch_id, expected_version, key)
+            raise ManagementAPIError(
+                "submission_indeterminate",
+                "Submission result is uncertain; retry with the same intent.",
+                status_code=503,
+                retry_same_intent=True,
+            )
+
+    fake = IndeterminateClient()
+    set_management_client_factory(lambda: fake)
+    app = AppTest.from_file(str(page("5")))
+    app.session_state["management_batch_id"] = "b1"
+    app.run(timeout=10)
+    next(button for button in app.button if button.label == "Run preflight").click().run(timeout=10)
+    next(box for box in app.checkbox if box.label == "Confirm batch submission").check().run(
+        timeout=10
+    )
+    next(button for button in app.button if button.label == "Submit batch").click().run(timeout=10)
+    first = [call for call in fake.calls if call[0] == "submit"][-1]
+    next(button for button in app.button if button.label == "Submit batch").click().run(timeout=10)
+    second = [call for call in fake.calls if call[0] == "submit"][-1]
+    assert first[-1] == second[-1]
+    assert not app.exception
+    assert "uncertain" in " ".join(str(item.value).lower() for item in app.error)
+
+
+def test_monitor_uses_explicitly_stale_snapshot_after_temporary_api_failure():
+    class StaleClient(FakeManagementClient):
+        def __init__(self):
+            super().__init__(batch_state="submitted")
+            self.fail_reads = False
+
+        def progress(self, batch_id):
+            if self.fail_reads:
+                raise ManagementAPIError("unreachable", "The management service is unavailable.")
+            return super().progress(batch_id)
+
+    fake = StaleClient()
+    set_management_client_factory(lambda: fake)
+    app = AppTest.from_file(str(page("6")))
+    app.session_state["management_batch_id"] = "b1"
+    app.run(timeout=10)
+    fake.fail_reads = True
+    app.run(timeout=10)
+    assert not app.exception
+    assert "stale durable state" in " ".join(str(item.value).lower() for item in app.warning)
+    assert "0 / 1" in [str(item.value) for item in app.metric]
+
+
+def test_results_render_attempt_lineage_and_isolate_one_managed_output_failure():
+    class ResultClient(FakeManagementClient):
+        def results(self, batch_id):
+            self._call("results", batch_id)
+            base = {
+                "workflow": "a800_wan22_t2v_33f",
+                "effective_priority": "normal",
+                "cancel_requested": False,
+                "can_retry": False,
+                "created_at": "2026-08-02T00:00:00Z",
+                "updated_at": "2026-08-02T00:00:01Z",
+                "error": None,
+            }
+            return {
+                "batch_id": batch_id,
+                "items": [
+                    {
+                        "item_id": "i1",
+                        "position": 0,
+                        "current_attempt_no": 2,
+                        "attempts": [
+                            {
+                                **base,
+                                "attempt_no": 1,
+                                "job_id": "j1",
+                                "retry_of_attempt_no": None,
+                                "retry_of_job_id": None,
+                                "status": "failed",
+                                "error": {"code": "remote_failed", "message": "Safe failure."},
+                                "outputs": [],
+                            },
+                            {
+                                **base,
+                                "attempt_no": 2,
+                                "job_id": "j2",
+                                "retry_of_attempt_no": 1,
+                                "retry_of_job_id": "j1",
+                                "status": "succeeded",
+                                "outputs": [
+                                    {
+                                        "asset_id": "bad",
+                                        "original_filename": "bad.mp3",
+                                        "mime_type": "audio/mpeg",
+                                        "size_bytes": 3,
+                                        "content_href": "/api/assets/bad/content",
+                                        "preview_href": "/api/assets/bad/content",
+                                    },
+                                    {
+                                        "asset_id": "good",
+                                        "original_filename": "good.mp3",
+                                        "mime_type": "audio/mpeg",
+                                        "size_bytes": 6,
+                                        "content_href": "/api/assets/good/content",
+                                        "preview_href": "/api/assets/good/content",
+                                    },
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            }
+
+        def get_content(self, href):
+            self._call("get_content", href)
+            if "/bad/" in href:
+                raise ManagementAPIError("unreachable", "Managed content is unavailable.")
+            return b"ID3safe"
+
+    fake = ResultClient(batch_state="submitted")
+    set_management_client_factory(lambda: fake)
+    app = AppTest.from_file(str(page("7")))
+    app.session_state["management_batch_id"] = "b1"
+    app.run(timeout=10)
+    assert not app.exception
+    rendered = " ".join(
+        str(element.value)
+        for collection in (app.caption, app.markdown, app.info, app.warning, app.error)
+        for element in collection
+    )
+    assert "retry_of_attempt=1" in rendered and "retry_of_job=j1" in rendered
+    assert len([call for call in fake.calls if call[0] == "get_content"]) == 2
+    assert len(app.get("download_button")) == 1
+    assert "unavailable" in rendered.lower()
+
+
+def test_submitted_editor_is_read_only_but_keeps_monitor_and_results_navigation():
+    fake = FakeManagementClient(batch_state="submitted")
+    set_management_client_factory(lambda: fake)
+    app = AppTest.from_file(str(page("5")))
+    app.session_state["management_batch_id"] = "b1"
+    app.run(timeout=10)
+    assert not app.exception
+    assert not app.get("data_editor")
+    labels = [button.label for button in app.button]
+    assert "Open Monitor" in labels and "Open Results" in labels
+    assert "Save draft" not in labels
+    assert "read-only" in " ".join(str(item.value).lower() for item in app.info)
+
+
+@pytest.mark.parametrize("row_count", [0, 100])
+def test_editor_apptest_saves_zero_and_one_hundred_row_drafts(row_count):
+    rows = [
+        {
+            "item_id": f"i{index}",
+            "position": index,
+            "parameter_overrides": {},
+            "priority_override": None,
+            "assets": [],
+        }
+        for index in range(row_count)
+    ]
+    fake = FakeManagementClient(items=rows)
+    set_management_client_factory(lambda: fake)
+    app = AppTest.from_file(str(page("5")))
+    app.session_state["management_batch_id"] = "b1"
+    app.run(timeout=10)
+    next(button for button in app.button if button.label == "Save draft").click().run(timeout=10)
+    saved = [call for call in fake.calls if call[0] == "replace_items"][-1][2]["items"]
+    assert len(saved) == row_count
+
+
+def test_monitor_error_is_redacted_and_does_not_crash_page():
+    class FailingClient(FakeManagementClient):
+        def progress(self, batch_id):
+            self._call("progress", batch_id)
+            raise ManagementAPIError("service_error", "A safe management error occurred.")
+
+    fake = FailingClient(batch_state="submitted")
+    set_management_client_factory(lambda: fake)
+    app = AppTest.from_file(str(page("6")))
+    app.session_state["management_batch_id"] = "b1"
+    app.run(timeout=10)
+    assert not app.exception
+    text = " ".join(str(item.value) for item in app.error)
+    assert "safe management error" in text.lower()
+    assert "token" not in text.lower() and "sql" not in text.lower()

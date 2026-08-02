@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import importlib
 import io
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select, update
+from sqlalchemy import event, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from api.app import app
@@ -31,6 +32,7 @@ from pixelle_video.media_assets.models import MediaAsset, MediaJobAsset
 from pixelle_video.media_jobs.contracts import MediaJobCreate
 from pixelle_video.media_jobs.database import create_media_jobs_engine, sqlite_url_for_path
 from pixelle_video.media_jobs.models import Base, MediaJob
+from pixelle_video.media_jobs.repository import MediaJobRepository
 from pixelle_video.media_jobs.state_machine import ErrorCategory
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 32
@@ -510,18 +512,250 @@ async def test_hundred_items_submit_in_one_transaction_with_unique_scoped_keys(
     items = [{"position": index, "parameter_overrides": {"seed": index}} for index in range(100)]
     written = await put_items(client, batch["batch_id"], items)
     assert written.status_code == 200 and len(written.json()["items"]) == 100
-    response = await client.post(
-        f"/api/admin/batches/{batch['batch_id']}/submit",
-        json={"expected_batch_version": 2},
-        headers={"Idempotency-Key": "batch-submit-hundred"},
-    )
+    asset_join_queries = []
+
+    def count_asset_join(_connection, _cursor, statement, _parameters, _context, _many):
+        normalized = statement.lower()
+        if "production_item_assets" in normalized and "join media_assets" in normalized:
+            asset_join_queries.append(statement)
+
+    engine = sessions.kw["bind"]
+    event.listen(engine.sync_engine, "before_cursor_execute", count_asset_join)
+    try:
+        response = await client.post(
+            f"/api/admin/batches/{batch['batch_id']}/submit",
+            json={"expected_batch_version": 2},
+            headers={"Idempotency-Key": "batch-submit-hundred"},
+        )
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", count_asset_join)
     assert response.status_code == 201 and len(response.json()["jobs"]) == 100
+    assert len(asset_join_queries) == 1
     async with sessions() as session:
         jobs = list((await session.execute(select(MediaJob))).scalars())
         attempts = await session.scalar(select(func.count()).select_from(ProductionItemAttempt))
     assert len(jobs) == attempts == 100
     assert len({job.idempotency_key for job in jobs}) == 100
     assert all(len(job.idempotency_key) <= 255 for job in jobs)
+
+
+@pytest.mark.parametrize("failure_position", [1, 50, 100])
+@pytest.mark.asyncio
+async def test_hundred_item_construction_failure_rolls_back_at_boundary_positions(
+    management_context, monkeypatch, failure_position
+):
+    client, _, _, _, sessions = management_context
+    _, batch = await create_batch(client)
+    items = [{"position": index, "parameter_overrides": {"seed": index}} for index in range(100)]
+    written = await put_items(client, batch["batch_id"], items)
+    assert written.status_code == 200
+    original = MediaJobRepository._new_job
+    calls = 0
+
+    def fail_at_the_same_position_on_each_attempt(create, request_hash):
+        nonlocal calls
+        calls += 1
+        if calls % failure_position == 0:
+            raise OSError("deterministic construction failure")
+        return original(create, request_hash)
+
+    monkeypatch.setattr(
+        MediaJobRepository, "_new_job", staticmethod(fail_at_the_same_position_on_each_attempt)
+    )
+    response = await client.post(
+        f"/api/admin/batches/{batch['batch_id']}/submit",
+        json={"expected_batch_version": 2},
+        headers={"Idempotency-Key": f"rollback-at-{failure_position}"},
+    )
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "submission_indeterminate"
+    async with sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(MediaJob)) == 0
+        assert await session.scalar(select(func.count()).select_from(ProductionItemAttempt)) == 0
+        assert await session.scalar(select(func.count()).select_from(ManagementOperation)) == 0
+        persisted = await session.get(ProductionBatch, batch["batch_id"])
+        snapshots = list((await session.execute(select(ProductionItem))).scalars())
+    assert persisted.state == "draft" and persisted.version == 2
+    assert all(item.effective_parameters_json is None for item in snapshots)
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_reports_mixed_current_attempt_truth(management_context):
+    client, _, _, _, sessions = management_context
+    batch_id, _, submitted = await create_submitted_batch(
+        client, items=[{"position": 0}, {"position": 1}, {"position": 2}]
+    )
+    job_ids = [entry["job_id"] for entry in submitted["jobs"]]
+    async with sessions() as session, session.begin():
+        await session.execute(
+            update(MediaJob)
+            .where(MediaJob.job_id == job_ids[1])
+            .values(cancel_requested_at=datetime.now(timezone.utc))
+        )
+        await session.execute(
+            update(MediaJob).where(MediaJob.job_id == job_ids[2]).values(status="succeeded")
+        )
+    response = await client.post(
+        f"/api/admin/batches/{batch_id}/cancel",
+        json={"expected_batch_version": 3},
+        headers={"Idempotency-Key": "cancel-mixed"},
+    )
+    assert response.status_code == 201
+    assert {
+        key: response.json()[key]
+        for key in ("requested", "already_requested", "skipped_terminal", "not_found")
+    } == {"requested": 1, "already_requested": 1, "skipped_terminal": 1, "not_found": 0}
+
+
+@pytest.mark.asyncio
+async def test_progress_has_eight_exclusive_buckets_and_complete_result_matrix(management_context):
+    client, _, _, _, sessions = management_context
+    batch_id, _, submitted = await create_submitted_batch(
+        client, items=[{"position": index} for index in range(8)]
+    )
+    jobs = [entry["job_id"] for entry in submitted["jobs"]]
+    states = [
+        "queued",
+        "submitting",
+        "running",
+        "queued",
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+    ]
+    async with sessions() as session, session.begin():
+        for job_id, state in zip(jobs, states, strict=True):
+            values = {"status": state}
+            if job_id == jobs[3]:
+                values["cancel_requested_at"] = datetime.now(timezone.utc)
+            await session.execute(
+                update(MediaJob).where(MediaJob.job_id == job_id).values(**values)
+            )
+    progress = (await client.get(f"/api/admin/batches/{batch_id}/progress")).json()
+    assert progress["counts"] == {
+        "queued": 1,
+        "submitting": 1,
+        "running": 1,
+        "cancel_requested": 1,
+        "succeeded": 1,
+        "failed": 1,
+        "timed_out": 1,
+        "cancelled": 1,
+    }
+    assert progress["total_items"] == 8 and progress["completed_items"] == 4
+    assert progress["derived_result"] is None and "percentage" not in progress
+
+    matrices = [
+        (["succeeded"] * 8, "all_succeeded"),
+        (["succeeded", *(["failed"] * 7)], "partially_succeeded"),
+        (["failed", "timed_out"] * 4, "all_failed"),
+        (["cancelled", *(["failed"] * 7)], "completed_with_cancellation"),
+    ]
+    for statuses, expected in matrices:
+        async with sessions() as session, session.begin():
+            for job_id, status in zip(jobs, statuses, strict=True):
+                await session.execute(
+                    update(MediaJob)
+                    .where(MediaJob.job_id == job_id)
+                    .values(status=status, cancel_requested_at=None)
+                )
+        result = (await client.get(f"/api/admin/batches/{batch_id}/progress")).json()
+        assert result["completed_items"] == 8 and result["derived_result"] == expected
+
+
+@pytest.mark.asyncio
+async def test_retry_eligible_is_atomic_under_mid_batch_failure(management_context, monkeypatch):
+    client, _, _, _, sessions = management_context
+    batch_id, _, submitted = await create_submitted_batch(
+        client, items=[{"position": 0}, {"position": 1}, {"position": 2}]
+    )
+    async with sessions() as session, session.begin():
+        await session.execute(
+            update(MediaJob)
+            .where(MediaJob.job_id.in_([entry["job_id"] for entry in submitted["jobs"]]))
+            .values(status="failed", error_category=ErrorCategory.REMOTE_FAILED.value)
+        )
+    original = MediaJobRepository._new_job
+    calls = 0
+
+    def fail_second_child_on_each_attempt(create, request_hash):
+        nonlocal calls
+        calls += 1
+        if calls % 2 == 0:
+            raise OSError("deterministic retry construction failure")
+        return original(create, request_hash)
+
+    monkeypatch.setattr(
+        MediaJobRepository, "_new_job", staticmethod(fail_second_child_on_each_attempt)
+    )
+    response = await client.post(
+        f"/api/admin/batches/{batch_id}/retry-eligible",
+        json={"expected_batch_version": 3},
+        headers={"Idempotency-Key": "retry-atomic-failure"},
+    )
+    assert response.status_code == 503
+    async with sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(MediaJob)) == 3
+        assert await session.scalar(select(func.count()).select_from(ProductionItemAttempt)) == 3
+        retry_operations = await session.scalar(
+            select(func.count())
+            .select_from(ManagementOperation)
+            .where(ManagementOperation.operation_type == "retry_eligible")
+        )
+    assert retry_operations == 0
+
+
+@pytest.mark.asyncio
+async def test_retry_eligible_concurrent_replay_and_commit_unknown_converge(
+    management_context, monkeypatch
+):
+    client, _, repository, _, sessions = management_context
+    batch_id, _, submitted = await create_submitted_batch(
+        client, items=[{"position": 0}, {"position": 1}]
+    )
+    async with sessions() as session, session.begin():
+        await session.execute(
+            update(MediaJob)
+            .where(MediaJob.job_id.in_([entry["job_id"] for entry in submitted["jobs"]]))
+            .values(status="failed", error_category=ErrorCategory.REMOTE_FAILED.value)
+        )
+
+    original_commit = repository._commit_management_operation
+    commit_calls = 0
+
+    async def commit_then_lose_acknowledgement(transaction):
+        nonlocal commit_calls
+        commit_calls += 1
+        await original_commit(transaction)
+        if commit_calls == 1:
+            raise OSError("lost retry acknowledgement")
+
+    monkeypatch.setattr(
+        repository, "_commit_management_operation", commit_then_lose_acknowledgement
+    )
+
+    async def retry():
+        return await client.post(
+            f"/api/admin/batches/{batch_id}/retry-eligible",
+            json={"expected_batch_version": 3},
+            headers={"Idempotency-Key": "retry-converges"},
+        )
+
+    first = await retry()
+    replay_a, replay_b = await asyncio.gather(retry(), retry())
+    assert first.status_code == 200
+    assert replay_a.status_code == replay_b.status_code == 200
+    assert first.json() == replay_a.json() == replay_b.json()
+    async with sessions() as session:
+        assert await session.scalar(select(func.count()).select_from(MediaJob)) == 4
+        assert await session.scalar(select(func.count()).select_from(ProductionItemAttempt)) == 4
+        retry_operations = await session.scalar(
+            select(func.count())
+            .select_from(ManagementOperation)
+            .where(ManagementOperation.operation_type == "retry_eligible")
+        )
+    assert retry_operations == 1
 
 
 @pytest.mark.asyncio

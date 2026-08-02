@@ -752,20 +752,26 @@ class ManagementRepository:
         )
         session.add(operation)
         now = utc_now()
+        relations_by_item: dict[str, list[tuple[Any, Any]]] = {item.id: [] for item in persisted}
+        relation_rows = list(
+            (
+                await session.execute(
+                    select(ProductionItemAsset, MediaAsset)
+                    .join(MediaAsset, MediaAsset.id == ProductionItemAsset.asset_id)
+                    .where(ProductionItemAsset.item_id.in_([item.id for item in persisted]))
+                    .order_by(
+                        ProductionItemAsset.item_id.asc(),
+                        ProductionItemAsset.role.asc(),
+                        ProductionItemAsset.position.asc(),
+                    )
+                )
+            ).tuples()
+        )
+        for relation, asset in relation_rows:
+            relations_by_item[relation.item_id].append((relation, asset))
         staged: list[tuple[ProductionItem, SubmissionItem, MediaJob, list[Any]]] = []
         for row, planned in zip(persisted, submission.items, strict=True):
-            relations = list(
-                (
-                    await session.execute(
-                        select(ProductionItemAsset, MediaAsset)
-                        .join(MediaAsset, MediaAsset.id == ProductionItemAsset.asset_id)
-                        .where(ProductionItemAsset.item_id == row.id)
-                        .order_by(
-                            ProductionItemAsset.role.asc(), ProductionItemAsset.position.asc()
-                        )
-                    )
-                ).tuples()
-            )
+            relations = relations_by_item[row.id]
             if any(
                 asset.kind != AssetKind.INPUT.value or asset.state != AssetState.AVAILABLE.value
                 for _, asset in relations

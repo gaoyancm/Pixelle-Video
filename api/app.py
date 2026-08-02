@@ -10,6 +10,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ruff: noqa: E402 -- executable entrypoint adjusts sys.path before local imports.
+
 """
 Pixelle-Video FastAPI Application
 

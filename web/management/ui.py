@@ -364,16 +364,6 @@ def render_editor() -> None:
 
     st.subheader("Logical items")
     rows = editor_rows(batch.get("items") or [])
-    if not rows:
-        rows = [
-            {
-                "item_id": "",
-                "position": 0,
-                "parameters": "{}",
-                "priority_override": "",
-                "asset_id": "",
-            }
-        ]
     edited = st.data_editor(
         rows,
         num_rows="dynamic",
