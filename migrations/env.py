@@ -6,9 +6,11 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import event, pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import pixelle_video.management.models as _management_models  # noqa: F401
+import pixelle_video.media_assets.models as _media_assets_models  # noqa: F401
 from pixelle_video.media_jobs.models import Base
 
 config = context.config
@@ -46,6 +48,17 @@ async def run_async_migrations() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    if connectable.url.get_backend_name() == "sqlite":
+
+        @event.listens_for(connectable.sync_engine, "connect")
+        def _enable_sqlite_foreign_keys(dbapi_connection, connection_record) -> None:
+            del connection_record
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute("PRAGMA foreign_keys=ON")
+            finally:
+                cursor.close()
+
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
     await connectable.dispose()

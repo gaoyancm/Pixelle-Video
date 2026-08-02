@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    desc,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -69,14 +70,22 @@ class MediaJob(Base):
             name="ck_media_jobs_remote_status",
         ),
         CheckConstraint(
-            "remote_termination_status IN "
-            f"({_enum_values(RemoteTerminationStatus)})",
+            f"remote_termination_status IN ({_enum_values(RemoteTerminationStatus)})",
             name="ck_media_jobs_remote_termination_status",
         ),
         CheckConstraint("retry_count >= 0", name="ck_media_jobs_retry_count"),
+        CheckConstraint("priority IN (0, 1, 2)", name="ck_media_jobs_priority"),
         CheckConstraint("version >= 1", name="ck_media_jobs_version"),
         Index("ix_media_jobs_status_next_attempt", "status", "next_attempt_at"),
         Index("ix_media_jobs_lease_expires_at", "lease_expires_at"),
+        Index(
+            "ix_media_jobs_claim_priority",
+            "status",
+            desc("priority"),
+            "next_attempt_at",
+            "created_at",
+            "job_id",
+        ),
     )
 
     job_id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -102,6 +111,9 @@ class MediaJob(Base):
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     retry_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
+    )
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
     )
     retry_of_job_id: Mapped[str | None] = mapped_column(String(36), index=True)
 

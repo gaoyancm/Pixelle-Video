@@ -311,9 +311,7 @@ async def test_only_dedicated_guard_can_requeue_before_submit_starts(tmp_path: P
             target_status=JobStatus.QUEUED,
         )
 
-    requeued = await repository.requeue_unsubmitted_job(
-        job.job_id, expected_version=job.version
-    )
+    requeued = await repository.requeue_unsubmitted_job(job.job_id, expected_version=job.version)
     assert requeued.status == JobStatus.QUEUED.value
     assert requeued.version == job.version + 1
     await engine.dispose()
@@ -338,9 +336,7 @@ async def test_submission_unknown_cannot_be_requeued(tmp_path: Path) -> None:
         submit_started_at=utc_now(),
     )
     with pytest.raises(CASConflictError):
-        await repository.requeue_unsubmitted_job(
-            job.job_id, expected_version=job.version
-        )
+        await repository.requeue_unsubmitted_job(job.job_id, expected_version=job.version)
     job = await repository.mark_submission_unknown(
         job.job_id,
         expected_version=job.version,
@@ -349,9 +345,7 @@ async def test_submission_unknown_cannot_be_requeued(tmp_path: Path) -> None:
 
     assert job.error_category == ErrorCategory.SUBMISSION_UNKNOWN.value
     with pytest.raises(CASConflictError):
-        await repository.requeue_unsubmitted_job(
-            job.job_id, expected_version=job.version
-        )
+        await repository.requeue_unsubmitted_job(job.job_id, expected_version=job.version)
     assert not can_retry(JobStatus.SUBMITTING, ErrorCategory.SUBMISSION_UNKNOWN)
     await engine.dispose()
 
@@ -376,9 +370,7 @@ async def test_submitting_job_with_prompt_id_cannot_be_requeued(tmp_path: Path) 
     )
 
     with pytest.raises(CASConflictError):
-        await repository.requeue_unsubmitted_job(
-            job.job_id, expected_version=job.version
-        )
+        await repository.requeue_unsubmitted_job(job.job_id, expected_version=job.version)
     await engine.dispose()
 
 
@@ -727,7 +719,32 @@ async def test_list_jobs_uses_job_id_as_stable_secondary_sort(tmp_path: Path) ->
     async with sessions() as session, session.begin():
         await session.execute(update(MediaJob).values(created_at=same_time))
     listed = await repository.list_jobs(limit=3)
-    assert [job.job_id for job in listed] == sorted(
-        (job.job_id for job in jobs), reverse=True
-    )
+    assert [job.job_id for job in listed] == sorted((job.job_id for job in jobs), reverse=True)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_phase3a_priority_is_persisted_but_claim_order_remains_created_at(
+    tmp_path: Path,
+) -> None:
+    repository, engine, sessions = await open_repository(tmp_path / "phase3a-priority.db")
+    older = (await repository.create_job(make_create())).job
+    newer = (await repository.create_job(make_create())).job
+    now = utc_now()
+    async with sessions() as session, session.begin():
+        await session.execute(
+            update(MediaJob)
+            .where(MediaJob.job_id == older.job_id)
+            .values(created_at=now - timedelta(seconds=1), priority=0)
+        )
+        await session.execute(
+            update(MediaJob)
+            .where(MediaJob.job_id == newer.job_id)
+            .values(created_at=now, priority=2)
+        )
+    candidates = await repository.list_claim_candidates(now=now + timedelta(seconds=1))
+    assert [(item.job_id, item.priority) for item in candidates] == [
+        (older.job_id, 0),
+        (newer.job_id, 2),
+    ]
     await engine.dispose()

@@ -38,22 +38,24 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
             "input_assets_json",
             "remote_status",
             "remote_termination_status",
-                "version",
-                "retry_of_job_id",
+            "version",
+            "retry_of_job_id",
         } <= columns
         index_names = {index["name"] for index in inspector.get_indexes("media_jobs")}
         assert {
             "ix_media_jobs_status",
             "ix_media_jobs_status_next_attempt",
             "ix_media_jobs_next_attempt_at",
-                "ix_media_jobs_lease_expires_at",
-                "ix_media_jobs_retry_of_job_id",
+            "ix_media_jobs_lease_expires_at",
+            "ix_media_jobs_retry_of_job_id",
         } <= index_names
         version = engine.execute if False else None
         del version
         with engine.connect() as connection:
-            revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert revision == "0003_add_media_assets"
+            revision = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+        assert revision == "0004_add_management_domain"
     finally:
         engine.dispose()
 
@@ -68,9 +70,7 @@ def test_repeated_alembic_upgrade_head_is_idempotent(tmp_path: Path) -> None:
     engine = create_engine(sync_sqlite_url(database_path))
     try:
         with engine.connect() as connection:
-            count = connection.execute(
-                text("SELECT COUNT(*) FROM alembic_version")
-            ).scalar_one()
+            count = connection.execute(text("SELECT COUNT(*) FROM alembic_version")).scalar_one()
         assert count == 1
     finally:
         engine.dispose()
@@ -112,9 +112,7 @@ def test_orm_metadata_matches_migrated_schema(tmp_path: Path) -> None:
                 else _normalized_sql(model_column.server_default.arg)
             )
             reflected_default = (
-                None
-                if reflected["default"] is None
-                else _normalized_sql(reflected["default"])
+                None if reflected["default"] is None else _normalized_sql(reflected["default"])
             )
             assert reflected_default == model_default, model_column.name
 
@@ -140,10 +138,13 @@ def test_orm_metadata_matches_migrated_schema(tmp_path: Path) -> None:
         }
         assert reflected_checks == model_checks
 
-        model_indexes = {
-            index.name: (tuple(column.name for column in index.columns), index.unique)
-            for index in table.indexes
-        }
+        model_indexes = {}
+        for index in table.indexes:
+            names = []
+            for expression in index.expressions:
+                element = getattr(expression, "element", expression)
+                names.append(getattr(element, "name", str(element)))
+            model_indexes[index.name] = (tuple(names), index.unique)
         reflected_indexes = {
             index["name"]: (tuple(index["column_names"]), index["unique"])
             for index in inspector.get_indexes("media_jobs")
