@@ -724,7 +724,7 @@ async def test_list_jobs_uses_job_id_as_stable_secondary_sort(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_phase3a_priority_is_persisted_but_claim_order_remains_created_at(
+async def test_phase3c_queued_claim_order_uses_priority_then_created_at(
     tmp_path: Path,
 ) -> None:
     repository, engine, sessions = await open_repository(tmp_path / "phase3a-priority.db")
@@ -744,7 +744,7 @@ async def test_phase3a_priority_is_persisted_but_claim_order_remains_created_at(
         )
     candidates = await repository.list_claim_candidates(now=now + timedelta(seconds=1))
     assert [(item.job_id, item.priority) for item in candidates] == [
-        (older.job_id, 0),
         (newer.job_id, 2),
+        (older.job_id, 0),
     ]
     await engine.dispose()

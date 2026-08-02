@@ -29,6 +29,7 @@ from pixelle_video.media_assets import AssetNotFoundError, AssetService
 from pixelle_video.media_assets.contracts import AssetKind, AssetState
 from pixelle_video.media_jobs.contracts import MediaInputAsset, MediaJobCreate, reject_secret_fields
 from pixelle_video.media_jobs.models import utc_now
+from pixelle_video.media_jobs.state_machine import ErrorCategory, JobStatus, can_retry, is_terminal
 from pixelle_video.services.comfyui_workflows import WORKFLOW_SPECS
 
 
@@ -342,6 +343,196 @@ class ManagementApplicationService:
             )
         )
         return result.result_json, result.created
+
+    async def update_batch_priority(self, batch_id: str, *, expected_version: int, priority: str):
+        result = await self.repository.update_batch_priority(
+            batch_id, expected_version=expected_version, priority=int(normalize_priority(priority))
+        )
+        result["default_priority"] = self.priority_name(result["default_priority"])
+        return result
+
+    async def update_item_priority(
+        self, item_id: str, *, expected_version: int, priority: str | None
+    ):
+        result = await self.repository.update_item_priority(
+            item_id,
+            expected_version=expected_version,
+            priority=None if priority is None else int(normalize_priority(priority)),
+        )
+        result["priority_override"] = self.priority_name(result["priority_override"])
+        result["effective_priority"] = self.priority_name(result["effective_priority"])
+        return result
+
+    async def cancel_batch(self, batch_id: str, *, expected_version: int, idempotency_key: str):
+        request_hash = self._operation_hash(batch_id, expected_version)
+        operation_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"phase3-batch-cancel:{batch_id}:{idempotency_key}:{request_hash}",
+            )
+        )
+        return await self.repository.cancel_batch(
+            batch_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            operation_id=operation_id,
+        )
+
+    async def retry_eligible(self, batch_id: str, *, expected_version: int, idempotency_key: str):
+        request_hash = self._operation_hash(batch_id, expected_version)
+        operation_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"phase3-retry-eligible:{batch_id}:{idempotency_key}:{request_hash}",
+            )
+        )
+        return await self.repository.retry_eligible(
+            batch_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            operation_id=operation_id,
+            deadline_at=utc_now() + timedelta(seconds=self.config.default_timeout_seconds),
+        )
+
+    async def progress(self, batch_id: str) -> dict[str, Any]:
+        snapshot = await self.repository.execution_snapshot(batch_id)
+        current = self._current_jobs(snapshot)
+        counts = {
+            name: 0
+            for name in (
+                "queued",
+                "submitting",
+                "running",
+                "cancel_requested",
+                "succeeded",
+                "failed",
+                "timed_out",
+                "cancelled",
+            )
+        }
+        for job in current.values():
+            status = JobStatus(job.status)
+            if is_terminal(status):
+                counts[status.value] += 1
+            elif job.cancel_requested_at is not None:
+                counts["cancel_requested"] += 1
+            else:
+                counts[status.value] += 1
+        total = len(snapshot["items"])
+        completed = sum(counts[name] for name in ("succeeded", "failed", "timed_out", "cancelled"))
+        result = None
+        if completed == total:
+            if counts["succeeded"] == total:
+                result = "all_succeeded"
+            elif counts["succeeded"]:
+                result = "partially_succeeded"
+            elif counts["cancelled"]:
+                result = "completed_with_cancellation"
+            else:
+                result = "all_failed"
+        return {
+            "batch_id": batch_id,
+            "batch_state": snapshot["batch"].state,
+            "total_items": total,
+            "completed_items": completed,
+            "derived_result": result,
+            "counts": counts,
+        }
+
+    async def results(self, batch_id: str) -> dict[str, Any]:
+        snapshot = await self.repository.execution_snapshot(batch_id)
+        jobs = {job.job_id: job for job in snapshot["jobs"]}
+        attempts_by_item: dict[str, list[Any]] = {}
+        for attempt in snapshot["attempts"]:
+            attempts_by_item.setdefault(attempt.item_id, []).append(attempt)
+        outputs: dict[str, list[tuple[Any, Any]]] = {}
+        for relation, asset in snapshot["outputs"]:
+            outputs.setdefault(relation.job_id, []).append((relation, asset))
+        items = []
+        for item in snapshot["items"]:
+            histories = []
+            attempts = attempts_by_item.get(item.id, [])
+            for attempt in attempts:
+                job = jobs.get(attempt.media_job_id)
+                if job is None:
+                    continue
+                error = None
+                category = None
+                if job.error_category:
+                    error = {
+                        "code": job.error_category,
+                        "message": "The media job did not complete successfully.",
+                    }
+                    try:
+                        category = ErrorCategory(job.error_category)
+                    except ValueError:
+                        category = None
+                metadata = {entry.get("output_id"): entry for entry in job.output_metadata}
+                assets = []
+                for _relation, asset in outputs.get(job.job_id, []):
+                    projection = metadata.get(asset.id, {})
+                    href = f"/api/assets/{asset.id}/content"
+                    assets.append(
+                        {
+                            "asset_id": asset.id,
+                            "original_filename": asset.original_filename,
+                            "media_type": asset.media_type,
+                            "mime_type": asset.mime_type,
+                            "size_bytes": asset.size_bytes,
+                            "width": projection.get("width"),
+                            "height": projection.get("height"),
+                            "duration": projection.get("duration"),
+                            "content_href": href,
+                            "preview_href": href,
+                        }
+                    )
+                histories.append(
+                    {
+                        "attempt_no": attempt.attempt_no,
+                        "job_id": job.job_id,
+                        "workflow": job.workflow_type,
+                        "retry_of_attempt_no": attempt.retry_of_attempt_no,
+                        "retry_of_job_id": job.retry_of_job_id,
+                        "status": job.status,
+                        "effective_priority": self.priority_name(job.priority),
+                        "cancel_requested": job.cancel_requested_at is not None,
+                        "can_retry": can_retry(JobStatus(job.status), category)
+                        and job.cancel_requested_at is None,
+                        "error": error,
+                        "created_at": job.created_at,
+                        "updated_at": job.updated_at,
+                        "outputs": assets,
+                    }
+                )
+            items.append(
+                {
+                    "item_id": item.id,
+                    "position": item.position,
+                    "current_attempt_no": None if not attempts else attempts[-1].attempt_no,
+                    "attempts": histories,
+                }
+            )
+        return {"batch_id": batch_id, "items": items}
+
+    @staticmethod
+    def _current_jobs(snapshot: dict[str, Any]) -> dict[str, Any]:
+        current = {}
+        jobs = {job.job_id: job for job in snapshot["jobs"]}
+        for attempt in snapshot["attempts"]:
+            if attempt.media_job_id in jobs:
+                current[attempt.item_id] = jobs[attempt.media_job_id]
+        return current
+
+    @staticmethod
+    def _operation_hash(batch_id: str, expected_version: int) -> str:
+        canonical = json.dumps(
+            {"batch_id": batch_id, "expected_batch_version": expected_version},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     async def _prepare(
         self,

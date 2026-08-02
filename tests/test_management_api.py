@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from api.app import app
@@ -27,10 +27,11 @@ from pixelle_video.management.models import (
     ProductionItemAttempt,
 )
 from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
-from pixelle_video.media_assets.models import MediaJobAsset
+from pixelle_video.media_assets.models import MediaAsset, MediaJobAsset
 from pixelle_video.media_jobs.contracts import MediaJobCreate
 from pixelle_video.media_jobs.database import create_media_jobs_engine, sqlite_url_for_path
 from pixelle_video.media_jobs.models import Base, MediaJob
+from pixelle_video.media_jobs.state_machine import ErrorCategory
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 32
 
@@ -98,6 +99,208 @@ async def put_items(client, batch_id, items, *, version=1):
         f"/api/admin/batches/{batch_id}/items",
         json={"expected_batch_version": version, "items": items},
     )
+
+
+async def create_submitted_batch(client, *, items=None):
+    _, batch = await create_batch(client)
+    items = items or [{"position": 0}]
+    replaced = await put_items(client, batch["batch_id"], items)
+    assert replaced.status_code == 200
+    submitted = await client.post(
+        f"/api/admin/batches/{batch['batch_id']}/submit",
+        json={"expected_batch_version": 2},
+        headers={"Idempotency-Key": f"submit-{batch['batch_id']}"},
+    )
+    assert submitted.status_code == 201
+    return batch["batch_id"], replaced.json(), submitted.json()
+
+
+@pytest.mark.asyncio
+async def test_phase3c_priority_progress_and_safe_current_attempt_results(management_context):
+    client, _, _, _, sessions = management_context
+    batch_id, draft, submitted = await create_submitted_batch(
+        client, items=[{"position": 0}, {"position": 1, "priority_override": "high"}]
+    )
+    priority = await client.patch(
+        f"/api/admin/batches/{batch_id}/priority",
+        json={"expected_batch_version": 3, "priority": "low"},
+    )
+    assert priority.status_code == 200
+    assert priority.json()["default_priority"] == "low"
+    assert priority.json()["updated"] == 1
+    assert priority.json()["overridden"] == 1
+
+    item_id = draft["items"][1]["item_id"]
+    item_priority = await client.patch(
+        f"/api/admin/items/{item_id}/priority",
+        json={"expected_batch_version": 4, "priority": None},
+    )
+    assert item_priority.status_code == 200
+    assert item_priority.json()["effective_priority"] == "low"
+
+    first_job = submitted["jobs"][0]["job_id"]
+    output_id = "11111111-1111-4111-8111-111111111111"
+    async with sessions() as session, session.begin():
+        await session.execute(
+            update(MediaJob)
+            .where(MediaJob.job_id == first_job)
+            .values(
+                status="succeeded",
+                output_metadata=[
+                    {
+                        "output_id": output_id,
+                        "width": 1280,
+                        "height": 720,
+                        "duration": 2.5,
+                    }
+                ],
+            )
+        )
+        session.add(
+            MediaAsset(
+                id=output_id,
+                kind="output",
+                state="available",
+                backend="local",
+                object_key="generated/private/result.mp4",
+                original_filename="result.mp4",
+                media_type="video",
+                mime_type="video/mp4",
+                size_bytes=1234,
+                sha256="a" * 64,
+                source="generated",
+            )
+        )
+        session.add(
+            MediaJobAsset(
+                job_id=first_job,
+                asset_id=output_id,
+                direction="output",
+                role="video",
+                position=0,
+            )
+        )
+    progress = (await client.get(f"/api/admin/batches/{batch_id}/progress")).json()
+    assert progress["batch_state"] == "submitted"
+    assert progress["total_items"] == 2 and progress["completed_items"] == 1
+    assert progress["derived_result"] is None and progress["counts"]["succeeded"] == 1
+    results = (await client.get(f"/api/admin/batches/{batch_id}/results")).json()
+    assert [item["position"] for item in results["items"]] == [0, 1]
+    serialized = str(results).lower()
+    for forbidden in ("node_id", "provider", "prompt_id", "object_key", "relative_path"):
+        assert forbidden not in serialized
+    output = results["items"][0]["attempts"][0]["outputs"][0]
+    assert output["content_href"] == f"/api/assets/{output_id}/content"
+    assert output["width"] == 1280 and output["duration"] == 2.5
+    second_job = submitted["jobs"][1]["job_id"]
+    async with sessions() as session, session.begin():
+        await session.execute(
+            update(MediaJob).where(MediaJob.job_id == second_job).values(status="cancelled")
+        )
+    completed = (await client.get(f"/api/admin/batches/{batch_id}/progress")).json()
+    assert completed["completed_items"] == 2
+    assert completed["derived_result"] == "partially_succeeded"
+    assert completed["counts"]["cancelled"] == 1
+    completed_results = (await client.get(f"/api/admin/batches/{batch_id}/results")).json()
+    await client.post(f"/api/admin/batches/{batch_id}/archive")
+    archived_results = await client.get(f"/api/admin/batches/{batch_id}/results")
+    assert archived_results.status_code == 200 and archived_results.json() == completed_results
+
+
+@pytest.mark.asyncio
+async def test_phase3c_cancel_is_atomic_idempotent_and_never_interrupts_remote(management_context):
+    client, _, _, _, sessions = management_context
+    batch_id, _, submitted = await create_submitted_batch(client)
+    headers = {"Idempotency-Key": "cancel-once"}
+    first = await client.post(
+        f"/api/admin/batches/{batch_id}/cancel", json={"expected_batch_version": 3}, headers=headers
+    )
+    replay = await client.post(
+        f"/api/admin/batches/{batch_id}/cancel", json={"expected_batch_version": 3}, headers=headers
+    )
+    assert first.status_code == 201 and replay.status_code == 200
+    assert first.json() == replay.json() and first.json()["requested"] == 1
+    async with sessions() as session:
+        job = await session.get(MediaJob, submitted["jobs"][0]["job_id"])
+        assert job.cancel_requested_at is not None and job.status == "queued"
+
+
+@pytest.mark.asyncio
+async def test_phase3c_retry_eligible_creates_one_lineage_and_zero_eligible_noop(
+    management_context,
+):
+    client, _, _, _, sessions = management_context
+    batch_id, draft, submitted = await create_submitted_batch(client)
+    source_id = submitted["jobs"][0]["job_id"]
+    async with sessions() as session, session.begin():
+        await session.execute(
+            update(MediaJob)
+            .where(MediaJob.job_id == source_id)
+            .values(status="failed", error_category=ErrorCategory.REMOTE_FAILED.value)
+        )
+    first = await client.post(
+        f"/api/admin/batches/{batch_id}/retry-eligible",
+        json={"expected_batch_version": 3},
+        headers={"Idempotency-Key": "retry-one"},
+    )
+    replay = await client.post(
+        f"/api/admin/batches/{batch_id}/retry-eligible",
+        json={"expected_batch_version": 3},
+        headers={"Idempotency-Key": "retry-one"},
+    )
+    assert first.status_code == 201 and replay.status_code == 200
+    assert first.json() == replay.json() and first.json()["retried"] == 1
+    noop = await client.post(
+        f"/api/admin/batches/{batch_id}/retry-eligible",
+        json={"expected_batch_version": 3},
+        headers={"Idempotency-Key": "retry-noop"},
+    )
+    assert noop.status_code == 201 and noop.json()["retried"] == 0
+    results = (await client.get(f"/api/admin/batches/{batch_id}/results")).json()
+    assert results["items"][0]["item_id"] == draft["items"][0]["item_id"]
+    assert [attempt["attempt_no"] for attempt in results["items"][0]["attempts"]] == [1, 2]
+    assert results["items"][0]["attempts"][1]["retry_of_attempt_no"] == 1
+    progress = (await client.get(f"/api/admin/batches/{batch_id}/progress")).json()
+    assert progress["total_items"] == 1 and progress["completed_items"] == 0
+    assert progress["counts"]["queued"] == 1 and progress["derived_result"] is None
+
+
+@pytest.mark.asyncio
+async def test_phase3c_priority_version_cas_has_one_concurrent_winner(management_context):
+    client, _, _, _, _ = management_context
+    batch_id, _, _ = await create_submitted_batch(client)
+
+    async def change(priority):
+        return await client.patch(
+            f"/api/admin/batches/{batch_id}/priority",
+            json={"expected_batch_version": 3, "priority": priority},
+        )
+
+    responses = await asyncio.gather(change("low"), change("high"))
+    assert sorted(response.status_code for response in responses) == [200, 409]
+
+
+@pytest.mark.asyncio
+async def test_phase3c_cancel_commit_unknown_is_classified_from_complete_facts(
+    management_context, monkeypatch
+):
+    client, _, repository, _, sessions = management_context
+    batch_id, _, submitted = await create_submitted_batch(client)
+
+    async def committed_then_unknown(transaction):
+        await transaction.commit()
+        raise OSError("simulated lost acknowledgement")
+
+    monkeypatch.setattr(repository, "_commit_management_operation", committed_then_unknown)
+    response = await client.post(
+        f"/api/admin/batches/{batch_id}/cancel",
+        json={"expected_batch_version": 3},
+        headers={"Idempotency-Key": "cancel-unknown"},
+    )
+    assert response.status_code == 200 and response.json()["requested"] == 1
+    async with sessions() as session:
+        job = await session.get(MediaJob, submitted["jobs"][0]["job_id"])
+        assert job.cancel_requested_at is not None
 
 
 @pytest.mark.asyncio
@@ -502,18 +705,23 @@ async def test_concurrent_same_key_different_hash_has_one_group_and_one_conflict
         assert await session.scalar(select(func.count()).select_from(ManagementOperation)) == 1
 
 
-def test_openapi_has_only_the_fourteen_phase3b_management_operations():
+def test_openapi_has_exactly_twenty_authorized_phase3_management_operations():
     schema = app.openapi()
     paths = {
         path: methods for path, methods in schema["paths"].items() if path.startswith("/api/admin")
     }
-    assert sum(len(methods) for methods in paths.values()) == 14
+    assert sum(len(methods) for methods in paths.values()) == 20
     serialized = str(paths).lower()
     for forbidden in ("node_id", "provider", "prompt_id", "submission_token", "base_url"):
         assert forbidden not in serialized
-    assert not any(
-        token in path for path in paths for token in ("progress", "results", "cancel", "retry")
-    )
+    assert {
+        ("patch", "/api/admin/batches/{batch_id}/priority"),
+        ("patch", "/api/admin/items/{item_id}/priority"),
+        ("get", "/api/admin/batches/{batch_id}/progress"),
+        ("get", "/api/admin/batches/{batch_id}/results"),
+        ("post", "/api/admin/batches/{batch_id}/cancel"),
+        ("post", "/api/admin/batches/{batch_id}/retry-eligible"),
+    }.issubset({(method, path) for path, methods in paths.items() for method in methods})
 
 
 def test_management_router_has_no_worker_provider_or_import_side_effect(monkeypatch):
@@ -524,7 +732,7 @@ def test_management_router_has_no_worker_provider_or_import_side_effect(monkeypa
 
     monkeypatch.setattr(dependencies.MediaJobsDatabase, "connect", forbidden_connect)
     module = importlib.reload(importlib.import_module("api.routers.management"))
-    assert len(module.router.routes) == 14
+    assert len(module.router.routes) == 20
     source = Path("api/routers/management.py").read_text(encoding="utf-8")
     for forbidden in ("MediaJobWorker", "ComfyUIAdapter", "Provider", "AsyncSession"):
         assert forbidden not in source

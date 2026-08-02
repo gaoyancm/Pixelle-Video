@@ -15,15 +15,23 @@ from api.dependencies import ManagementServiceDep
 from api.schemas.management import (
     BatchCreate,
     BatchList,
+    BatchPriorityResponse,
+    BatchPriorityUpdate,
     BatchResponse,
     BatchUpdate,
+    CancelResponse,
     DraftItemsReplace,
     DraftItemsResponse,
+    ItemPriorityResponse,
+    ItemPriorityUpdate,
     PreflightResponse,
+    ProgressResponse,
     ProjectCreate,
     ProjectList,
     ProjectResponse,
     ProjectUpdate,
+    ResultsResponse,
+    RetryResponse,
     SubmitResponse,
     VersionRequest,
     WorkflowCatalog,
@@ -34,6 +42,7 @@ from pixelle_video.management import (
     ManagementConflictError,
     ManagementConstraintError,
     ManagementNotFoundError,
+    OperationIndeterminateError,
     SubmissionIndeterminateError,
     normalize_priority,
 )
@@ -67,6 +76,12 @@ class ManagementRoute(APIRoute):
                     503,
                     "submission_indeterminate",
                     "The batch submission outcome could not be determined safely.",
+                )
+            except OperationIndeterminateError:
+                return _error(
+                    503,
+                    "operation_indeterminate",
+                    "The management operation outcome could not be determined safely.",
                 )
             except ManagementConflictError as exc:
                 code = (
@@ -256,3 +271,69 @@ async def submit(
 @router.get("/workflows", response_model=WorkflowCatalog)
 async def workflows(service: ManagementServiceDep):
     return WorkflowCatalog(items=service.workflow_catalog())
+
+
+@router.patch("/batches/{batch_id}/priority", response_model=BatchPriorityResponse)
+async def update_batch_priority(
+    batch_id: str, body: BatchPriorityUpdate, service: ManagementServiceDep
+):
+    return await service.update_batch_priority(
+        batch_id, expected_version=body.expected_batch_version, priority=body.priority
+    )
+
+
+@router.patch("/items/{item_id}/priority", response_model=ItemPriorityResponse)
+async def update_item_priority(
+    item_id: str, body: ItemPriorityUpdate, service: ManagementServiceDep
+):
+    return await service.update_item_priority(
+        item_id, expected_version=body.expected_batch_version, priority=body.priority
+    )
+
+
+@router.get("/batches/{batch_id}/progress", response_model=ProgressResponse)
+async def batch_progress(batch_id: str, service: ManagementServiceDep):
+    return await service.progress(batch_id)
+
+
+@router.get("/batches/{batch_id}/results", response_model=ResultsResponse)
+async def batch_results(batch_id: str, service: ManagementServiceDep):
+    return await service.results(batch_id)
+
+
+@router.post("/batches/{batch_id}/cancel", response_model=CancelResponse, status_code=201)
+async def cancel_batch(
+    batch_id: str,
+    body: VersionRequest,
+    response: Response,
+    service: ManagementServiceDep,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    try:
+        key = validate_idempotency_key(idempotency_key)
+    except ValueError:
+        raise RequestValidationError([]) from None
+    result, created = await service.cancel_batch(
+        batch_id, expected_version=body.expected_batch_version, idempotency_key=key
+    )
+    response.status_code = 201 if created else 200
+    return result
+
+
+@router.post("/batches/{batch_id}/retry-eligible", response_model=RetryResponse, status_code=201)
+async def retry_eligible(
+    batch_id: str,
+    body: VersionRequest,
+    response: Response,
+    service: ManagementServiceDep,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    try:
+        key = validate_idempotency_key(idempotency_key)
+    except ValueError:
+        raise RequestValidationError([]) from None
+    result, created = await service.retry_eligible(
+        batch_id, expected_version=body.expected_batch_version, idempotency_key=key
+    )
+    response.status_code = 201 if created else 200
+    return result

@@ -62,6 +62,28 @@ class ReleasingProcessor:
 
 
 @pytest.mark.asyncio
+async def test_recovery_candidates_are_processed_before_queued_priority_work(
+    tmp_path: Path,
+) -> None:
+    repository, engine = await open_repository(tmp_path / "worker-recovery-order.db")
+    recovery = (await repository.create_job(make_create())).job
+    queued = (await repository.create_job(make_create().model_copy(update={"priority": 2}))).job
+    sessions = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with sessions() as session, session.begin():
+        await session.execute(
+            update(MediaJob).where(MediaJob.job_id == recovery.job_id).values(status="submitting")
+        )
+    processor = ReleasingProcessor(repository)
+    worker = MediaJobWorker(
+        repository, processor, candidate_limit=1, lease_seconds=2, heartbeat_seconds=0.2
+    )
+    assert await worker.run_once(include_recovery=True) == 1
+    assert processor.calls == [recovery.job_id]
+    assert queued.job_id not in processor.calls
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_two_workers_compete_and_only_one_processes_job(tmp_path: Path) -> None:
     repository, engine = await open_repository(tmp_path / "worker-race.db")
     job = (await repository.create_job(make_create())).job

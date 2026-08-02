@@ -123,6 +123,138 @@ class VersionRequest(StrictModel):
     expected_batch_version: int = Field(ge=1)
 
 
+class BatchPriorityUpdate(VersionRequest):
+    priority: PriorityName
+
+
+class ItemPriorityUpdate(VersionRequest):
+    priority: PriorityName | None
+
+
+class BatchPriorityResponse(StrictModel):
+    batch_id: str
+    batch_version: int
+    default_priority: PriorityName
+    updated: int
+    unchanged: int
+    overridden: int
+    skipped_claimed_or_nonqueued: int
+
+
+class ItemPriorityResponse(StrictModel):
+    batch_id: str
+    batch_version: int
+    item_id: str
+    priority_override: PriorityName | None
+    effective_priority: PriorityName
+    job_priority_updated: bool
+
+
+class OperationItem(StrictModel):
+    item_id: str
+    job_id: str | None
+    disposition: str
+
+
+class CancelResponse(StrictModel):
+    batch_id: str
+    batch_version: int
+    operation_id: str
+    message: str
+    requested: int
+    already_requested: int
+    skipped_terminal: int
+    not_found: int
+    items: list[OperationItem]
+
+
+class RetryItem(StrictModel):
+    item_id: str
+    source_job_id: str | None
+    job_id: str | None
+    source_attempt_no: int | None
+    attempt_no: int | None
+    disposition: Literal["retried", "skipped"]
+
+
+class RetryResponse(StrictModel):
+    batch_id: str
+    batch_version: int
+    operation_id: str
+    retried: int
+    skipped: int
+    items: list[RetryItem]
+
+
+class ProgressCounts(StrictModel):
+    queued: int
+    submitting: int
+    running: int
+    cancel_requested: int
+    succeeded: int
+    failed: int
+    timed_out: int
+    cancelled: int
+
+
+class ProgressResponse(StrictModel):
+    batch_id: str
+    batch_state: Literal["draft", "submitted"]
+    total_items: int
+    completed_items: int
+    derived_result: (
+        Literal["all_succeeded", "partially_succeeded", "all_failed", "completed_with_cancellation"]
+        | None
+    )
+    counts: ProgressCounts
+
+
+class ResultError(StrictModel):
+    code: str
+    message: str
+
+
+class ResultAsset(StrictModel):
+    asset_id: str
+    original_filename: str
+    media_type: str
+    mime_type: str
+    size_bytes: int
+    width: int | None = None
+    height: int | None = None
+    duration: float | None = None
+    content_href: str
+    preview_href: str
+
+
+class ResultAttempt(StrictModel):
+    attempt_no: int
+    job_id: str
+    workflow: str
+    retry_of_attempt_no: int | None
+    retry_of_job_id: str | None
+    status: str
+    effective_priority: PriorityName
+    cancel_requested: bool
+    can_retry: bool
+    created_at: datetime
+    updated_at: datetime
+    error: ResultError | None
+    outputs: list[ResultAsset]
+
+
+class ResultItem(StrictModel):
+    item_id: str
+    position: int
+    current_attempt_no: int | None
+    attempts: list[ResultAttempt]
+
+
+class ResultsResponse(StrictModel):
+    batch_id: str
+    items: list[ResultItem]
+
+
 class PreflightIssue(StrictModel):
     code: str
     message: str

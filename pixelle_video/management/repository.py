@@ -12,9 +12,11 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from pixelle_video.media_assets.models import MediaAsset, MediaJobAsset
 from pixelle_video.media_jobs.contracts import MediaJobCreate, compute_request_hash
 from pixelle_video.media_jobs.models import MediaJob, utc_now
 from pixelle_video.media_jobs.repository import MediaJobRepository
+from pixelle_video.media_jobs.state_machine import ErrorCategory, JobStatus, can_retry, is_terminal
 
 from .domain import (
     BatchState,
@@ -52,6 +54,10 @@ class ManagementConstraintError(ManagementRepositoryError):
 
 
 class SubmissionIndeterminateError(ManagementRepositoryError):
+    pass
+
+
+class OperationIndeterminateError(ManagementRepositoryError):
     pass
 
 
@@ -832,6 +838,592 @@ class ManagementRepository:
     async def validate_submission_result(self, batch_id: str, result_json: dict[str, Any]) -> None:
         async with self._session_factory() as session:
             await self._validate_submission_result_in_session(session, batch_id, result_json)
+
+    async def execution_snapshot(self, batch_id: str) -> dict[str, Any]:
+        """Return one short-lived, internally complete execution projection."""
+
+        async with self._session_factory() as session:
+            batch = await session.get(ProductionBatch, batch_id)
+            if batch is None:
+                raise ManagementNotFoundError("production batch not found")
+            items = list(
+                (
+                    await session.execute(
+                        select(ProductionItem)
+                        .where(ProductionItem.batch_id == batch_id)
+                        .order_by(ProductionItem.position.asc(), ProductionItem.id.asc())
+                    )
+                ).scalars()
+            )
+            item_ids = [item.id for item in items]
+            attempts = (
+                list(
+                    (
+                        await session.execute(
+                            select(ProductionItemAttempt)
+                            .where(ProductionItemAttempt.item_id.in_(item_ids))
+                            .order_by(
+                                ProductionItemAttempt.item_id.asc(),
+                                ProductionItemAttempt.attempt_no.asc(),
+                            )
+                        )
+                    ).scalars()
+                )
+                if item_ids
+                else []
+            )
+            job_ids = [attempt.media_job_id for attempt in attempts]
+            jobs = (
+                list(
+                    (
+                        await session.execute(select(MediaJob).where(MediaJob.job_id.in_(job_ids)))
+                    ).scalars()
+                )
+                if job_ids
+                else []
+            )
+            outputs = (
+                list(
+                    (
+                        await session.execute(
+                            select(MediaJobAsset, MediaAsset)
+                            .join(MediaAsset, MediaAsset.id == MediaJobAsset.asset_id)
+                            .where(
+                                MediaJobAsset.job_id.in_(job_ids),
+                                MediaJobAsset.direction == "output",
+                            )
+                            .order_by(MediaJobAsset.job_id.asc(), MediaJobAsset.position.asc())
+                        )
+                    ).tuples()
+                )
+                if job_ids
+                else []
+            )
+            return {
+                "batch": batch,
+                "items": items,
+                "attempts": attempts,
+                "jobs": jobs,
+                "outputs": outputs,
+            }
+
+    async def update_batch_priority(
+        self, batch_id: str, *, expected_version: int, priority: int
+    ) -> dict[str, Any]:
+        normalize_priority(priority)
+        async with self._scope() as session:
+            batch = await session.get(ProductionBatch, batch_id)
+            self._require_submitted_write(batch, expected_version)
+            new_version = await session.scalar(
+                update(ProductionBatch)
+                .where(
+                    ProductionBatch.id == batch_id,
+                    ProductionBatch.version == expected_version,
+                    ProductionBatch.state == BatchState.SUBMITTED.value,
+                    ProductionBatch.archived_at.is_(None),
+                )
+                .values(
+                    default_priority=priority, version=expected_version + 1, updated_at=utc_now()
+                )
+                .returning(ProductionBatch.version)
+            )
+            if new_version is None:
+                raise ManagementConflictError("production batch version changed")
+            items, current, jobs = await self._current_execution(session, batch_id)
+            counts = {
+                "updated": 0,
+                "unchanged": 0,
+                "overridden": 0,
+                "skipped_claimed_or_nonqueued": 0,
+            }
+            now = utc_now()
+            for item in items:
+                if item.priority_override is not None:
+                    counts["overridden"] += 1
+                    continue
+                job = jobs.get(current[item.id].media_job_id) if item.id in current else None
+                if (
+                    job is None
+                    or job.status != JobStatus.QUEUED.value
+                    or job.lease_owner is not None
+                    or job.lease_expires_at is not None
+                ):
+                    counts["skipped_claimed_or_nonqueued"] += 1
+                elif job.priority == priority:
+                    counts["unchanged"] += 1
+                else:
+                    job.priority = priority
+                    job.version += 1
+                    job.updated_at = now
+                    counts["updated"] += 1
+            await session.flush()
+            return {
+                "batch_id": batch.id,
+                "batch_version": new_version,
+                "default_priority": priority,
+                **counts,
+            }
+
+    async def update_item_priority(
+        self, item_id: str, *, expected_version: int, priority: int | None
+    ) -> dict[str, Any]:
+        if priority is not None:
+            normalize_priority(priority)
+        async with self._scope() as session:
+            item = await session.get(ProductionItem, item_id)
+            if item is None:
+                raise ManagementNotFoundError("production item not found")
+            batch = await session.get(ProductionBatch, item.batch_id)
+            self._require_submitted_write(batch, expected_version)
+            new_version = await session.scalar(
+                update(ProductionBatch)
+                .where(
+                    ProductionBatch.id == batch.id,
+                    ProductionBatch.version == expected_version,
+                    ProductionBatch.state == BatchState.SUBMITTED.value,
+                    ProductionBatch.archived_at.is_(None),
+                )
+                .values(version=expected_version + 1, updated_at=utc_now())
+                .returning(ProductionBatch.version)
+            )
+            if new_version is None:
+                raise ManagementConflictError("production batch version changed")
+            attempt = (
+                await session.execute(
+                    select(ProductionItemAttempt)
+                    .where(ProductionItemAttempt.item_id == item_id)
+                    .order_by(ProductionItemAttempt.attempt_no.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            job = None if attempt is None else await session.get(MediaJob, attempt.media_job_id)
+            effective = batch.default_priority if priority is None else priority
+            job_updated = False
+            if (
+                job is not None
+                and job.status == JobStatus.QUEUED.value
+                and job.lease_owner is None
+                and job.lease_expires_at is None
+            ):
+                if job.priority != effective:
+                    job.priority = effective
+                    job.version += 1
+                    job.updated_at = utc_now()
+                    job_updated = True
+            item.priority_override = priority
+            item.updated_at = utc_now()
+            await session.flush()
+            return {
+                "batch_id": batch.id,
+                "batch_version": new_version,
+                "item_id": item.id,
+                "priority_override": priority,
+                "effective_priority": effective,
+                "job_priority_updated": job_updated,
+            }
+
+    async def cancel_batch(
+        self,
+        batch_id: str,
+        *,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        operation_id: str,
+        allow_retry: bool = True,
+    ) -> tuple[dict[str, Any], bool]:
+        async def stage(session: AsyncSession) -> tuple[dict[str, Any], bool]:
+            existing = await self._operation_in_session(
+                session, batch_id, "batch_cancel", idempotency_key
+            )
+            replay = self._operation_replay(existing, request_hash)
+            if replay is not None:
+                await self._validate_operation_result(session, "batch_cancel", replay)
+                return replay, False
+            batch = await session.get(ProductionBatch, batch_id)
+            self._require_submitted_write(batch, expected_version)
+            items, current, jobs = await self._current_execution(session, batch_id)
+            now = utc_now()
+            entries = []
+            counts = {"requested": 0, "already_requested": 0, "skipped_terminal": 0, "not_found": 0}
+            for item in items:
+                attempt = current.get(item.id)
+                job = None if attempt is None else jobs.get(attempt.media_job_id)
+                if job is None:
+                    disposition = "not_found"
+                elif is_terminal(JobStatus(job.status)):
+                    disposition = "skipped_terminal"
+                elif job.cancel_requested_at is not None:
+                    disposition = "already_requested"
+                else:
+                    disposition = await self._request_cancellation_in_session(session, job, now)
+                counts[disposition] += 1
+                entries.append(
+                    {
+                        "item_id": item.id,
+                        "job_id": None if job is None else job.job_id,
+                        "disposition": disposition,
+                    }
+                )
+            result = {
+                "batch_id": batch_id,
+                "batch_version": batch.version,
+                "operation_id": operation_id,
+                "message": (
+                    "Cancellation requests were recorded. The Worker will coordinate them; "
+                    "remote computation may not stop immediately."
+                ),
+                **counts,
+                "items": entries,
+            }
+            session.add(
+                ManagementOperation(
+                    id=operation_id,
+                    scope_type="batch",
+                    scope_id=batch_id,
+                    operation_type="batch_cancel",
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    result_json=result,
+                )
+            )
+            await session.flush()
+            return result, True
+
+        return await self._reliable_operation(
+            stage, batch_id, "batch_cancel", idempotency_key, request_hash, allow_retry
+        )
+
+    async def retry_eligible(
+        self,
+        batch_id: str,
+        *,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        operation_id: str,
+        deadline_at: Any,
+        allow_retry: bool = True,
+    ) -> tuple[dict[str, Any], bool]:
+        async def stage(session: AsyncSession) -> tuple[dict[str, Any], bool]:
+            existing = await self._operation_in_session(
+                session, batch_id, "retry_eligible", idempotency_key
+            )
+            replay = self._operation_replay(existing, request_hash)
+            if replay is not None:
+                await self._validate_operation_result(session, "retry_eligible", replay)
+                return replay, False
+            batch = await session.get(ProductionBatch, batch_id)
+            self._require_submitted_write(batch, expected_version)
+            items, current, jobs = await self._current_execution(session, batch_id)
+            staged = []
+            entries = []
+            for item in items:
+                attempt = current.get(item.id)
+                source = None if attempt is None else jobs.get(attempt.media_job_id)
+                error = None
+                if source is not None and source.error_category is not None:
+                    try:
+                        error = ErrorCategory(source.error_category)
+                    except ValueError:
+                        error = None
+                eligible = (
+                    source is not None
+                    and source.cancel_requested_at is None
+                    and can_retry(JobStatus(source.status), error)
+                )
+                if not eligible:
+                    entries.append(
+                        {
+                            "item_id": item.id,
+                            "source_job_id": None if source is None else source.job_id,
+                            "job_id": None,
+                            "source_attempt_no": None if attempt is None else attempt.attempt_no,
+                            "attempt_no": None,
+                            "disposition": "skipped",
+                        }
+                    )
+                    continue
+                job_id = str(
+                    uuid.uuid5(uuid.NAMESPACE_URL, f"{operation_id}:{item.id}:{source.job_id}")
+                )
+                scoped_key = uuid.uuid5(uuid.NAMESPACE_URL, f"{operation_id}:key:{item.id}").hex
+                priority = (
+                    batch.default_priority
+                    if item.priority_override is None
+                    else item.priority_override
+                )
+                create = MediaJobCreate(
+                    job_id=job_id,
+                    workflow_type=source.workflow_type,
+                    workflow_key=source.workflow_key,
+                    executor_kind=source.executor_kind,
+                    provider=source.provider,
+                    node_id=source.node_id,
+                    input_json=source.input_json,
+                    input_assets_json=source.input_assets_json,
+                    idempotency_key=scoped_key,
+                    deadline_at=deadline_at,
+                    retry_of_job_id=source.job_id,
+                    priority=priority,
+                )
+                child = MediaJobRepository._new_job(
+                    create, compute_request_hash(create.immutable_request_payload())
+                )
+                child.retry_count = source.retry_count + 1
+                session.add(child)
+                staged.append((item, attempt, source, child))
+                entries.append(
+                    {
+                        "item_id": item.id,
+                        "source_job_id": source.job_id,
+                        "job_id": child.job_id,
+                        "source_attempt_no": attempt.attempt_no,
+                        "attempt_no": attempt.attempt_no + 1,
+                        "disposition": "retried",
+                    }
+                )
+            await session.flush()
+            for item, attempt, source, child in staged:
+                relations = list(
+                    (
+                        await session.execute(
+                            select(MediaJobAsset)
+                            .where(
+                                MediaJobAsset.job_id == source.job_id,
+                                MediaJobAsset.direction == "input",
+                            )
+                            .order_by(MediaJobAsset.position.asc())
+                        )
+                    ).scalars()
+                )
+                session.add_all(
+                    MediaJobAsset(
+                        job_id=child.job_id,
+                        asset_id=relation.asset_id,
+                        direction="input",
+                        role=relation.role,
+                        position=relation.position,
+                    )
+                    for relation in relations
+                )
+                session.add(
+                    ProductionItemAttempt(
+                        item_id=item.id,
+                        attempt_no=attempt.attempt_no + 1,
+                        media_job_id=child.job_id,
+                        retry_of_attempt_no=attempt.attempt_no,
+                    )
+                )
+            result = {
+                "batch_id": batch_id,
+                "batch_version": batch.version,
+                "operation_id": operation_id,
+                "retried": len(staged),
+                "skipped": len(items) - len(staged),
+                "items": entries,
+            }
+            session.add(
+                ManagementOperation(
+                    id=operation_id,
+                    scope_type="batch",
+                    scope_id=batch_id,
+                    operation_type="retry_eligible",
+                    idempotency_key=idempotency_key,
+                    request_hash=request_hash,
+                    result_json=result,
+                )
+            )
+            await session.flush()
+            return result, True
+
+        return await self._reliable_operation(
+            stage, batch_id, "retry_eligible", idempotency_key, request_hash, allow_retry
+        )
+
+    async def _reliable_operation(
+        self, stage, batch_id, operation_type, idempotency_key, request_hash, allow_retry
+    ):
+        session = self._session_factory()
+        transaction = await session.begin()
+        try:
+            result = await stage(session)
+            if not result[1]:
+                await transaction.rollback()
+                return result
+            await self._commit_management_operation(transaction)
+            return result
+        except (IntegrityError, DBAPIError, OSError):
+            if transaction.is_active:
+                await transaction.rollback()
+            async with self._session_factory() as verify:
+                existing = await self._operation_in_session(
+                    verify, batch_id, operation_type, idempotency_key
+                )
+                replay = self._operation_replay(existing, request_hash)
+                if replay is not None:
+                    await self._validate_operation_result(verify, operation_type, replay)
+            if replay is not None:
+                return replay, False
+            if allow_retry:
+                return await self._reliable_operation(
+                    stage, batch_id, operation_type, idempotency_key, request_hash, False
+                )
+            raise OperationIndeterminateError("management operation outcome is unknown") from None
+        finally:
+            await session.close()
+
+    @staticmethod
+    async def _commit_management_operation(transaction: Any) -> None:
+        await transaction.commit()
+
+    @staticmethod
+    async def _validate_operation_result(
+        session: AsyncSession, operation_type: str, result: dict[str, Any]
+    ) -> None:
+        try:
+            entries = result["items"]
+            operation_id = result["operation_id"]
+        except (KeyError, TypeError):
+            raise OperationIndeterminateError("management operation result is incomplete") from None
+        operation = await session.get(ManagementOperation, operation_id)
+        if operation is None or operation.result_json != result:
+            raise OperationIndeterminateError("management operation facts conflict")
+        if operation_type == "batch_cancel":
+            requested = [
+                entry["job_id"] for entry in entries if entry["disposition"] == "requested"
+            ]
+            if requested:
+                count = await session.scalar(
+                    select(func.count())
+                    .select_from(MediaJob)
+                    .where(
+                        MediaJob.job_id.in_(requested), MediaJob.cancel_requested_at.is_not(None)
+                    )
+                )
+                if count != len(requested):
+                    raise OperationIndeterminateError("cancellation facts are incomplete")
+        elif operation_type == "retry_eligible":
+            retried = [entry for entry in entries if entry["disposition"] == "retried"]
+            if retried:
+                pairs = {(entry["item_id"], entry["job_id"]) for entry in retried}
+                attempts = list(
+                    (
+                        await session.execute(
+                            select(ProductionItemAttempt).where(
+                                ProductionItemAttempt.media_job_id.in_(
+                                    [entry["job_id"] for entry in retried]
+                                )
+                            )
+                        )
+                    ).scalars()
+                )
+                jobs = await session.scalar(
+                    select(func.count())
+                    .select_from(MediaJob)
+                    .where(MediaJob.job_id.in_([entry["job_id"] for entry in retried]))
+                )
+                if (
+                    jobs != len(retried)
+                    or {(attempt.item_id, attempt.media_job_id) for attempt in attempts} != pairs
+                ):
+                    raise OperationIndeterminateError("retry facts are incomplete")
+
+    @staticmethod
+    def _require_submitted_write(batch, expected_version: int) -> None:
+        if batch is None:
+            raise ManagementNotFoundError("production batch not found")
+        if batch.archived_at is not None or batch.state != BatchState.SUBMITTED.value:
+            raise ManagementConflictError("production batch is not an active submitted batch")
+        if batch.version != expected_version:
+            raise ManagementConflictError("production batch version changed")
+
+    @staticmethod
+    async def _current_execution(session: AsyncSession, batch_id: str):
+        items = list(
+            (
+                await session.execute(
+                    select(ProductionItem)
+                    .where(ProductionItem.batch_id == batch_id)
+                    .order_by(ProductionItem.position.asc(), ProductionItem.id.asc())
+                )
+            ).scalars()
+        )
+        attempts = (
+            list(
+                (
+                    await session.execute(
+                        select(ProductionItemAttempt)
+                        .where(ProductionItemAttempt.item_id.in_([item.id for item in items]))
+                        .order_by(ProductionItemAttempt.attempt_no.asc())
+                    )
+                ).scalars()
+            )
+            if items
+            else []
+        )
+        current = {}
+        for attempt in attempts:
+            current[attempt.item_id] = attempt
+        job_ids = [attempt.media_job_id for attempt in current.values()]
+        rows = (
+            list(
+                (
+                    await session.execute(select(MediaJob).where(MediaJob.job_id.in_(job_ids)))
+                ).scalars()
+            )
+            if job_ids
+            else []
+        )
+        return items, current, {job.job_id: job for job in rows}
+
+    @staticmethod
+    async def _request_cancellation_in_session(
+        session: AsyncSession, job: MediaJob, now: Any
+    ) -> str:
+        for _ in range(3):
+            if is_terminal(JobStatus(job.status)):
+                return "skipped_terminal"
+            if job.cancel_requested_at is not None:
+                return "already_requested"
+            updated = await session.scalar(
+                update(MediaJob)
+                .where(
+                    MediaJob.job_id == job.job_id,
+                    MediaJob.status == job.status,
+                    MediaJob.version == job.version,
+                    MediaJob.cancel_requested_at.is_(None),
+                )
+                .values(cancel_requested_at=now, updated_at=now, version=job.version + 1)
+                .returning(MediaJob.job_id)
+            )
+            if updated is not None:
+                return "requested"
+            await session.refresh(job)
+        raise ManagementConflictError("media job changed during cancellation")
+
+    @staticmethod
+    async def _operation_in_session(session, batch_id, operation_type, idempotency_key):
+        return (
+            await session.execute(
+                select(ManagementOperation).where(
+                    ManagementOperation.scope_type == "batch",
+                    ManagementOperation.scope_id == batch_id,
+                    ManagementOperation.operation_type == operation_type,
+                    ManagementOperation.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+
+    @staticmethod
+    def _operation_replay(operation, request_hash):
+        if operation is None:
+            return None
+        if operation.request_hash != request_hash:
+            raise ManagementConflictError("management operation key belongs to a different request")
+        if operation.result_json is None:
+            raise OperationIndeterminateError("management operation result is incomplete")
+        return operation.result_json
 
     @staticmethod
     async def _validate_submission_result_in_session(

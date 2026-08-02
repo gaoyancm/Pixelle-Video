@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Sequence
 
-from sqlalchemy import Select, and_, func, or_, select, update
+from sqlalchemy import Select, and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -340,25 +340,36 @@ class MediaJobRepository:
             JobStatus.SUBMITTING,
             JobStatus.RUNNING,
         )
-        statement = (
-            select(MediaJob)
-            .where(
-                MediaJob.status.in_(tuple(status.value for status in claim_statuses)),
-                or_(
-                    MediaJob.next_attempt_at.is_(None),
-                    MediaJob.next_attempt_at <= now,
+        statement = select(MediaJob).where(
+            MediaJob.status.in_(tuple(status.value for status in claim_statuses)),
+            or_(
+                MediaJob.next_attempt_at.is_(None),
+                MediaJob.next_attempt_at <= now,
+            ),
+            or_(
+                and_(
+                    MediaJob.lease_owner.is_(None),
+                    MediaJob.lease_expires_at.is_(None),
                 ),
-                or_(
-                    and_(
-                        MediaJob.lease_owner.is_(None),
-                        MediaJob.lease_expires_at.is_(None),
-                    ),
-                    MediaJob.lease_expires_at <= now,
-                ),
-            )
-            .order_by(MediaJob.created_at.asc())
-            .limit(limit)
+                MediaJob.lease_expires_at <= now,
+            ),
         )
+        if set(claim_statuses) == {JobStatus.QUEUED}:
+            statement = statement.order_by(
+                MediaJob.priority.desc(), MediaJob.created_at.asc(), MediaJob.job_id.asc()
+            )
+        else:
+            queued_rank = case((MediaJob.status == JobStatus.QUEUED.value, 1), else_=0)
+            queued_priority = case(
+                (MediaJob.status == JobStatus.QUEUED.value, MediaJob.priority), else_=0
+            )
+            statement = statement.order_by(
+                queued_rank.asc(),
+                queued_priority.desc(),
+                MediaJob.created_at.asc(),
+                MediaJob.job_id.asc(),
+            )
+        statement = statement.limit(limit)
         async with self._session_factory() as session:
             result = await session.execute(statement)
             return list(result.scalars())

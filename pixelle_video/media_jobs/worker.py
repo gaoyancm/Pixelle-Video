@@ -138,15 +138,24 @@ class MediaJobWorker:
 
         if self._stop.is_set():
             return 0
-        candidates = await self.repository.list_claim_candidates(
-            now=self._clock(),
-            limit=self.candidate_limit,
-            statuses=(
-                None
-                if include_recovery
-                else (JobStatus.QUEUED,)
-            ),
-        )
+        candidates = []
+        if include_recovery:
+            candidates.extend(
+                await self.repository.list_claim_candidates(
+                    now=self._clock(),
+                    limit=self.candidate_limit,
+                    statuses=(JobStatus.SUBMITTING, JobStatus.RUNNING),
+                )
+            )
+        remaining = self.candidate_limit - len(candidates)
+        if remaining:
+            candidates.extend(
+                await self.repository.list_claim_candidates(
+                    now=self._clock(),
+                    limit=remaining,
+                    statuses=(JobStatus.QUEUED,),
+                )
+            )
         processed = 0
         for candidate in candidates:
             if self._stop.is_set():
@@ -157,8 +166,7 @@ class MediaJobWorker:
                     expected_status=JobStatus(candidate.status),
                     expected_version=candidate.version,
                     lease_owner=self.worker_id,
-                    lease_expires_at=self._clock()
-                    + timedelta(seconds=self.lease_seconds),
+                    lease_expires_at=self._clock() + timedelta(seconds=self.lease_seconds),
                 )
             except CASConflictError:
                 continue
