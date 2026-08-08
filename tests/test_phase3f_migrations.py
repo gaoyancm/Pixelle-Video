@@ -12,8 +12,8 @@ from sqlalchemy import create_engine, inspect, text
 from pixelle_video.media_jobs.database import sqlite_url_for_path
 
 PROJECT_ROOT = Path(__file__).parents[1]
-PREVIOUS_REVISION = "0004_add_management_domain"
-HEAD_REVISION = "0005_add_audit_and_budget"
+PREVIOUS_REVISION = "0005_add_audit_and_budget"
+HEAD_REVISION = "0006_add_prompt_templates"
 NEW_TABLES = {"audit_events", "budget_config", "output_schemas"}
 
 
@@ -98,7 +98,7 @@ def test_upgrade_seeds_budget_config_and_output_schemas(tmp_path: Path) -> None:
 def test_downgrade_removes_phase3f_objects(tmp_path: Path) -> None:
     path = tmp_path / "round-trip.db"
     command.upgrade(config(path), "head")
-    command.downgrade(config(path), PREVIOUS_REVISION)
+    command.downgrade(config(path), "0004_add_management_domain")
     engine = create_engine(sync_url(path))
     inspector = inspect(engine)
     try:

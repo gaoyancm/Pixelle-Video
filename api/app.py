@@ -56,6 +56,7 @@ from api.routers import (
     management_router,
     media_assets_router,
     media_jobs_router,
+    prompts_router,
     resources_router,
     tasks_router,
     tts_router,
@@ -145,6 +146,7 @@ app.include_router(media_jobs_router, prefix=api_config.api_prefix)
 app.include_router(media_assets_router, prefix=api_config.api_prefix)
 app.include_router(management_router, prefix=api_config.api_prefix)
 app.include_router(audit_budget_router, prefix=api_config.api_prefix)
+app.include_router(prompts_router, prefix=api_config.api_prefix)
 
 
 @app.get("/")

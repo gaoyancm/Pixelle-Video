@@ -24,6 +24,7 @@ from api.routers.llm import router as llm_router
 from api.routers.management import router as management_router
 from api.routers.media_assets import router as media_assets_router
 from api.routers.media_jobs import router as media_jobs_router
+from api.routers.prompts import router as prompts_router
 from api.routers.resources import router as resources_router
 from api.routers.tasks import router as tasks_router
 from api.routers.tts import router as tts_router
@@ -44,4 +45,5 @@ __all__ = [
     "media_assets_router",
     "management_router",
     "audit_budget_router",
+    "prompts_router",
 ]
