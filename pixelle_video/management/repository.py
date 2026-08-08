@@ -6,8 +6,9 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, AsyncIterator, Sequence
+from typing import TYPE_CHECKING, Any, AsyncIterator, Sequence
 
+from loguru import logger
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -17,6 +18,9 @@ from pixelle_video.media_jobs.contracts import MediaJobCreate, compute_request_h
 from pixelle_video.media_jobs.models import MediaJob, utc_now
 from pixelle_video.media_jobs.repository import MediaJobRepository
 from pixelle_video.media_jobs.state_machine import ErrorCategory, JobStatus, can_retry, is_terminal
+
+if TYPE_CHECKING:
+    from pixelle_video.audit import AuditRepository
 
 from .domain import (
     BatchState,
@@ -122,9 +126,34 @@ class ManagementRepository:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         session: AsyncSession | None = None,
+        audit: "AuditRepository | None" = None,
     ):
         self._session_factory = session_factory
         self._session = session
+        self._audit = audit
+
+    async def _record_audit(
+        self,
+        *,
+        event_type: str,
+        scope_type: str,
+        scope_id: str,
+        details: dict | None = None,
+        cost_snapshot: dict | None = None,
+    ) -> None:
+        """Best-effort audit recording that never affects management operations."""
+        if self._audit is None:
+            return
+        try:
+            await self._audit.record(
+                event_type=event_type,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                details=details,
+                cost_snapshot=cost_snapshot,
+            )
+        except Exception:
+            logger.warning("audit event recording failed for {} {}", scope_type, scope_id)
 
     def in_transaction(self) -> ManagementUnitOfWork:
         """Open one explicit transaction for later application-service composition."""
@@ -621,6 +650,7 @@ class ManagementRepository:
         idempotency_key: str,
         request_hash: str,
         result_json: dict[str, Any] | None = None,
+        cost_snapshot: dict[str, Any] | None = None,
         operation_id: str | None = None,
     ) -> OperationMatch:
         match = await self.get_operation_match(
@@ -644,6 +674,7 @@ class ManagementRepository:
             id=operation_id or str(uuid.uuid4()),
             request_hash=request_hash,
             result_json=result_json,
+            cost_snapshot=cost_snapshot,
             **key.__dict__,
         )
         try:
@@ -652,6 +683,16 @@ class ManagementRepository:
                 await session.flush()
         except IntegrityError:
             raise self._constraint_error() from None
+        await self._record_audit(
+            event_type="operation_performed",
+            scope_type=key.scope_type,
+            scope_id=key.scope_id,
+            details={
+                "operation_type": key.operation_type,
+                "idempotency_key": key.idempotency_key,
+            },
+            cost_snapshot=cost_snapshot,
+        )
         return OperationMatch(OperationMatchKind.MISSING, operation)
 
     async def submit_batch(
@@ -669,6 +710,19 @@ class ManagementRepository:
                 await transaction.rollback()
                 return result
             await self._commit_batch_submission(transaction)
+            await self._record_audit(
+                event_type="batch_submitted",
+                scope_type="batch",
+                scope_id=submission.batch_id,
+                details={
+                    "operation_id": submission.operation_id,
+                    "item_count": len(submission.items),
+                },
+                cost_snapshot={
+                    "operation_id": submission.operation_id,
+                    "item_count": len(submission.items),
+                },
+            )
             return result
         except (IntegrityError, DBAPIError, OSError):
             if transaction.is_active:
@@ -1096,9 +1150,18 @@ class ManagementRepository:
             await session.flush()
             return result, True
 
-        return await self._reliable_operation(
+        result, created = await self._reliable_operation(
             stage, batch_id, "batch_cancel", idempotency_key, request_hash, allow_retry
         )
+        if created:
+            await self._record_audit(
+                event_type="operation_performed",
+                scope_type="batch",
+                scope_id=batch_id,
+                details={"operation_type": "batch_cancel"},
+                cost_snapshot={"operation_id": operation_id},
+            )
+        return result, created
 
     async def retry_eligible(
         self,
@@ -1243,9 +1306,18 @@ class ManagementRepository:
             await session.flush()
             return result, True
 
-        return await self._reliable_operation(
+        result, created = await self._reliable_operation(
             stage, batch_id, "retry_eligible", idempotency_key, request_hash, allow_retry
         )
+        if created:
+            await self._record_audit(
+                event_type="operation_performed",
+                scope_type="batch",
+                scope_id=batch_id,
+                details={"operation_type": "retry_eligible"},
+                cost_snapshot={"operation_id": operation_id},
+            )
+        return result, created
 
     async def _reliable_operation(
         self, stage, batch_id, operation_type, idempotency_key, request_hash, allow_retry

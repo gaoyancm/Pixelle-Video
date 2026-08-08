@@ -14,6 +14,7 @@
 API Routers
 """
 
+from api.routers.audit_budget import router as audit_budget_router
 from api.routers.content import router as content_router
 from api.routers.files import router as files_router
 from api.routers.frame import router as frame_router
@@ -42,4 +43,5 @@ __all__ = [
     "media_jobs_router",
     "media_assets_router",
     "management_router",
+    "audit_budget_router",
 ]

@@ -24,6 +24,8 @@ from loguru import logger
 
 from api.services.management import ManagementApplicationService
 from api.services.media_jobs import MediaJobApplicationService
+from pixelle_video.audit import AuditRepository
+from pixelle_video.budget import BudgetRepository, BudgetService
 from pixelle_video.config.manager import ConfigManager
 from pixelle_video.management import ManagementRepository
 from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
@@ -37,6 +39,8 @@ _media_jobs_database: MediaJobsDatabase | None = None
 _media_jobs_service: MediaJobApplicationService | None = None
 _media_assets_service: AssetService | None = None
 _management_service: ManagementApplicationService | None = None
+_audit_repository: AuditRepository | None = None
+_budget_service: BudgetService | None = None
 
 
 async def get_pixelle_video() -> PixelleVideoCore:
@@ -77,7 +81,9 @@ async def get_media_job_service() -> MediaJobApplicationService:
         manager = ConfigManager()
         config = manager.config.media_jobs
         _media_jobs_database = MediaJobsDatabase(config)
-        repository = MediaJobRepository(_media_jobs_database.connect())
+        repository = MediaJobRepository(
+            _media_jobs_database.connect(), audit=await get_audit_service()
+        )
         assets = await get_media_asset_service()
         _media_jobs_service = MediaJobApplicationService(
             repository,
@@ -87,6 +93,8 @@ async def get_media_job_service() -> MediaJobApplicationService:
                 manager.config.comfyui.nodes,
                 workflow_type,
             ).id,
+            budget=await get_budget_service(),
+            audit=await get_audit_service(),
         )
     return _media_jobs_service
 
@@ -124,25 +132,60 @@ async def get_management_service() -> ManagementApplicationService:
         sessions = _media_jobs_database.connect()
         assets = await get_media_asset_service()
         _management_service = ManagementApplicationService(
-            ManagementRepository(sessions),
+            ManagementRepository(sessions, audit=await get_audit_service()),
             config,
             assets,
             node_selector=lambda workflow_type: select_comfyui_node(
                 manager.config.comfyui.nodes, workflow_type
             ).id,
             configured_nodes=manager.config.comfyui.nodes,
+            budget=await get_budget_service(),
         )
     return _management_service
 
 
+async def get_audit_service() -> AuditRepository:
+    """Lazily build the audit repository on the shared media-jobs database."""
+
+    global _audit_repository, _media_jobs_database
+    if _audit_repository is None:
+        manager = ConfigManager()
+        config = manager.config.media_jobs
+        if _media_jobs_database is None:
+            _media_jobs_database = MediaJobsDatabase(config)
+        _audit_repository = AuditRepository(_media_jobs_database.connect())
+    return _audit_repository
+
+
+async def get_budget_service() -> BudgetService:
+    """Lazily build the budget service on the shared media-jobs database."""
+
+    global _budget_service, _media_jobs_database
+    if _budget_service is None:
+        manager = ConfigManager()
+        config = manager.config.media_jobs
+        if _media_jobs_database is None:
+            _media_jobs_database = MediaJobsDatabase(config)
+        sessions = _media_jobs_database.connect()
+        _budget_service = BudgetService(
+            BudgetRepository(sessions),
+            sessions,
+            job_repository=MediaJobRepository(sessions),
+        )
+    return _budget_service
+
+
 async def shutdown_media_jobs() -> None:
-    global _management_service, _media_assets_service, _media_jobs_database, _media_jobs_service
+    global _management_service, _media_assets_service, _media_jobs_database
+    global _media_jobs_service, _audit_repository, _budget_service
     if _media_jobs_database is not None:
         await _media_jobs_database.dispose()
     _media_jobs_database = None
     _media_jobs_service = None
     _media_assets_service = None
     _management_service = None
+    _audit_repository = None
+    _budget_service = None
 
 
 # Type alias for dependency injection
@@ -150,3 +193,5 @@ PixelleVideoDep = Annotated[PixelleVideoCore, Depends(get_pixelle_video)]
 MediaJobServiceDep = Annotated[MediaJobApplicationService, Depends(get_media_job_service)]
 MediaAssetServiceDep = Annotated[AssetService, Depends(get_media_asset_service)]
 ManagementServiceDep = Annotated[ManagementApplicationService, Depends(get_management_service)]
+AuditServiceDep = Annotated[AuditRepository, Depends(get_audit_service)]
+BudgetServiceDep = Annotated[BudgetService, Depends(get_budget_service)]

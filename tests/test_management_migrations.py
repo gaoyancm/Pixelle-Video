@@ -10,6 +10,8 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 
+import pixelle_video.audit.models as _audit_models  # noqa: F401
+import pixelle_video.budget.models as _budget_models  # noqa: F401
 import pixelle_video.management.models as _management_models  # noqa: F401
 import pixelle_video.media_assets.models as _media_assets_models  # noqa: F401
 from pixelle_video.media_jobs.database import sqlite_url_for_path
@@ -17,7 +19,7 @@ from pixelle_video.media_jobs.models import Base
 
 PROJECT_ROOT = Path(__file__).parents[1]
 PREVIOUS_REVISION = "0003_add_media_assets"
-HEAD_REVISION = "0004_add_management_domain"
+HEAD_REVISION = "0005_add_audit_and_budget"
 MANAGEMENT_TABLES = {
     "projects",
     "production_batches",
@@ -47,7 +49,7 @@ def test_phase3a_migration_has_one_head_and_follows_0003():
     script = ScriptDirectory.from_config(config(Path("unused.db")))
     assert script.get_heads() == [HEAD_REVISION]
     revision = script.get_revision(HEAD_REVISION)
-    assert revision is not None and revision.down_revision == PREVIOUS_REVISION
+    assert revision is not None and revision.down_revision == "0004_add_management_domain"
 
 
 def test_empty_upgrade_creates_six_tables_priority_constraints_and_indexes(tmp_path):

@@ -213,6 +213,7 @@ class ManagementOperation(Base):
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    cost_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), nullable=False, default=utc_now, server_default=text("CURRENT_TIMESTAMP")
     )

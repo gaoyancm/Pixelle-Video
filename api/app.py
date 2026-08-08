@@ -46,6 +46,7 @@ from api.dependencies import shutdown_media_jobs, shutdown_pixelle_video
 
 # Import routers
 from api.routers import (
+    audit_budget_router,
     content_router,
     files_router,
     frame_router,
@@ -143,6 +144,7 @@ app.include_router(frame_router, prefix=api_config.api_prefix)
 app.include_router(media_jobs_router, prefix=api_config.api_prefix)
 app.include_router(media_assets_router, prefix=api_config.api_prefix)
 app.include_router(management_router, prefix=api_config.api_prefix)
+app.include_router(audit_budget_router, prefix=api_config.api_prefix)
 
 
 @app.get("/")

@@ -5,8 +5,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable, Sequence
+from typing import TYPE_CHECKING, Iterable, Sequence
 
+from loguru import logger
 from sqlalchemy import Select, and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -21,6 +22,9 @@ from .state_machine import (
     is_terminal,
     validate_transition,
 )
+
+if TYPE_CHECKING:
+    from pixelle_video.audit import AuditRepository
 
 
 class IdempotencyConflictError(RuntimeError):
@@ -68,8 +72,37 @@ def _utc(value: datetime | None) -> datetime | None:
 class MediaJobRepository:
     """Persist media jobs using short transactions and CAS updates."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        audit: "AuditRepository | None" = None,
+    ):
         self._session_factory = session_factory
+        self._audit = audit
+
+    async def _record_audit(
+        self,
+        *,
+        event_type: str,
+        scope_type: str,
+        scope_id: str,
+        details: dict | None = None,
+        cost_snapshot: dict | None = None,
+    ) -> None:
+        """Best-effort audit recording that never affects job operations."""
+        if self._audit is None:
+            return
+        try:
+            await self._audit.record(
+                event_type=event_type,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                details=details,
+                cost_snapshot=cost_snapshot,
+            )
+        except Exception:
+            logger.warning("audit event recording failed for {} {}", scope_type, scope_id)
 
     @staticmethod
     def _new_job(create: MediaJobCreate, request_hash: str) -> MediaJob:
@@ -118,6 +151,18 @@ class MediaJobRepository:
                     ) from None
                 return CreateJobResult(job=existing, created=False)
 
+        await self._record_audit(
+            event_type="job_created",
+            scope_type="job",
+            scope_id=job.job_id,
+            details={
+                "workflow_type": job.workflow_type,
+                "provider": job.provider,
+                "node_id": job.node_id,
+                "retry_of_job_id": job.retry_of_job_id,
+                "status": job.status,
+            },
+        )
         return CreateJobResult(job=job, created=True)
 
     async def create_job_with_assets(self, create: MediaJobCreate) -> CreateJobResult:
@@ -172,6 +217,20 @@ class MediaJobRepository:
                         "idempotency key is already associated with a different request"
                     ) from None
                 return CreateJobResult(job=existing, created=False)
+
+        await self._record_audit(
+            event_type="job_created",
+            scope_type="job",
+            scope_id=job.job_id,
+            details={
+                "workflow_type": job.workflow_type,
+                "provider": job.provider,
+                "node_id": job.node_id,
+                "retry_of_job_id": job.retry_of_job_id,
+                "status": job.status,
+            },
+        )
+        return CreateJobResult(job=job, created=True)
 
     async def get_job(self, job_id: str) -> MediaJob | None:
         async with self._session_factory() as session:
@@ -323,6 +382,20 @@ class MediaJobRepository:
                     ) from None
                 return CreateJobResult(job=existing, created=False)
 
+        await self._record_audit(
+            event_type="job_created",
+            scope_type="job",
+            scope_id=child.job_id,
+            details={
+                "workflow_type": child.workflow_type,
+                "provider": child.provider,
+                "node_id": child.node_id,
+                "retry_of_job_id": child.retry_of_job_id,
+                "status": child.status,
+            },
+        )
+        return CreateJobResult(job=child, created=True)
+
     async def list_claim_candidates(
         self,
         *,
@@ -340,8 +413,15 @@ class MediaJobRepository:
             JobStatus.SUBMITTING,
             JobStatus.RUNNING,
         )
+        # awaiting_human jobs are never claimable: a human decision is required.
+        claim_statuses = tuple(
+            status for status in claim_statuses if status is not JobStatus.AWAITING_HUMAN
+        )
+        if not claim_statuses:
+            return []
         statement = select(MediaJob).where(
             MediaJob.status.in_(tuple(status.value for status in claim_statuses)),
+            MediaJob.status != JobStatus.AWAITING_HUMAN.value,
             or_(
                 MediaJob.next_attempt_at.is_(None),
                 MediaJob.next_attempt_at <= now,
@@ -853,4 +933,43 @@ class MediaJobRepository:
                 job = result.scalar_one_or_none()
                 if job is None:
                     raise CASConflictError("media job status or version changed before the update")
+        target_status = values.get("status")
+        if target_status is not None and target_status != expected_status.value:
+            await self._record_audit(
+                event_type="job_status_changed",
+                scope_type="job",
+                scope_id=job_id,
+                details={
+                    "from": expected_status.value,
+                    "to": target_status,
+                    "version": expected_version + 1,
+                },
+            )
         return job
+
+    async def set_budget_fields(
+        self,
+        job_id: str,
+        *,
+        expected_status: JobStatus,
+        expected_version: int,
+        estimated_cost: float | None = None,
+        actual_cost: float | None = None,
+        budget_warning: str | None = None,
+    ) -> MediaJob:
+        """Persist phase 03-F cost fields without changing job status."""
+        values: dict = {}
+        if estimated_cost is not None:
+            values["estimated_cost"] = estimated_cost
+        if actual_cost is not None:
+            values["actual_cost"] = actual_cost
+        if budget_warning is not None:
+            values["budget_warning"] = budget_warning
+        if not values:
+            raise ValueError("at least one budget field must be provided")
+        return await self._cas_update(
+            job_id,
+            expected_status=expected_status,
+            expected_version=expected_version,
+            values=values,
+        )
