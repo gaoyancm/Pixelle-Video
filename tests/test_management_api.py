@@ -637,6 +637,7 @@ async def test_progress_has_eight_exclusive_buckets_and_complete_result_matrix(m
         "queued": 1,
         "submitting": 1,
         "running": 1,
+        "awaiting_human": 0,
         "cancel_requested": 1,
         "succeeded": 1,
         "failed": 1,
@@ -947,7 +948,8 @@ def test_openapi_has_exactly_twenty_authorized_phase3_management_operations():
     paths = {
         path: methods for path, methods in schema["paths"].items() if path.startswith("/api/admin")
     }
-    assert sum(len(methods) for methods in paths.values()) == 20
+    # 03-F adds five audit/budget operations on top of the twenty phase 03 ones.
+    assert sum(len(methods) for methods in paths.values()) == 25
     serialized = str(paths).lower()
     for forbidden in ("node_id", "provider", "prompt_id", "submission_token", "base_url"):
         assert forbidden not in serialized

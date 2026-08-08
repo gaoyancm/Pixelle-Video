@@ -38,6 +38,7 @@ from api.schemas.management import (
 )
 from api.schemas.media_jobs import validate_idempotency_key
 from api.services.management import PreflightFailedError
+from pixelle_video.budget import BudgetBlockedError
 from pixelle_video.management import (
     ManagementConflictError,
     ManagementConstraintError,
@@ -82,6 +83,14 @@ class ManagementRoute(APIRoute):
                     503,
                     "operation_indeterminate",
                     "The management operation outcome could not be determined safely.",
+                )
+            except BudgetBlockedError as exc:
+                return _error(
+                    429,
+                    "budget_limit_exceeded",
+                    str(exc),
+                    limit=exc.limit,
+                    estimated=exc.estimated,
                 )
             except ManagementConflictError as exc:
                 code = (

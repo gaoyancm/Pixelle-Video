@@ -12,6 +12,7 @@ from typing import Any, Callable, Sequence
 from pydantic import ValidationError
 
 from api.schemas.media_jobs import MediaJobRequest
+from pixelle_video.budget import BudgetService
 from pixelle_video.config.schema import MediaJobsConfig
 from pixelle_video.management import (
     BatchSubmission,
@@ -79,12 +80,14 @@ class ManagementApplicationService:
         *,
         node_selector: Callable[[str], str],
         configured_nodes: Sequence[Any] = (),
+        budget: BudgetService | None = None,
     ):
         self.repository = repository
         self.config = config
         self.assets = assets
         self.node_selector = node_selector
         self.configured_nodes = tuple(configured_nodes)
+        self.budget = budget
 
     @staticmethod
     def priority_name(value: int | None) -> str | None:
@@ -279,6 +282,11 @@ class ManagementApplicationService:
         )
         if prepared.issues:
             raise PreflightFailedError(list(prepared.issues))
+        budget_decision = None
+        if self.budget is not None:
+            budget_decision = await self.budget.check_batch_submission(
+                prepared.batch.workflow_type, len(prepared.items)
+            )
         operation_id = str(
             uuid.uuid5(
                 uuid.NAMESPACE_URL,
@@ -342,6 +350,18 @@ class ManagementApplicationService:
                 result_json=result_json,
             )
         )
+        if result.created and self.budget is not None and budget_decision is not None:
+            estimated = budget_decision.estimated_cost
+            warning = budget_decision.warning
+            if estimated is not None or warning is not None:
+                for entry in result.result_json.get("jobs", []):
+                    await self.budget.record_job_cost(
+                        entry["job_id"],
+                        status=JobStatus.QUEUED,
+                        expected_version=1,
+                        estimated_cost=estimated,
+                        budget_warning=warning,
+                    )
         return result.result_json, result.created
 
     async def update_batch_priority(self, batch_id: str, *, expected_version: int, priority: str):
@@ -405,6 +425,7 @@ class ManagementApplicationService:
                 "queued",
                 "submitting",
                 "running",
+                "awaiting_human",
                 "cancel_requested",
                 "succeeded",
                 "failed",
@@ -414,7 +435,9 @@ class ManagementApplicationService:
         }
         for job in current.values():
             status = JobStatus(job.status)
-            if is_terminal(status):
+            if status is JobStatus.AWAITING_HUMAN:
+                counts["awaiting_human"] += 1
+            elif is_terminal(status):
                 counts[status.value] += 1
             elif job.cancel_requested_at is not None:
                 counts["cancel_requested"] += 1
