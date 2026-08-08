@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     CheckConstraint,
+    Float,
     Index,
     Integer,
     String,
@@ -160,3 +161,8 @@ class MediaJob(Base):
         server_default=text("'unknown'"),
     )
     remote_status_updated_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+    # Phase 03-F budget fields (F4).
+    estimated_cost: Mapped[float | None] = mapped_column(Float)
+    actual_cost: Mapped[float | None] = mapped_column(Float)
+    budget_warning: Mapped[str | None] = mapped_column(Text)
