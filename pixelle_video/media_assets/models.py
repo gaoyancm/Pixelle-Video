@@ -3,8 +3,18 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Integer, String, UniqueConstraint, text
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from pixelle_video.media_jobs.models import Base, UTCDateTime, utc_now
@@ -81,6 +91,22 @@ class MediaJobAsset(Base):
     direction: Mapped[str] = mapped_column(String(16), primary_key=True)
     role: Mapped[str] = mapped_column(String(64), nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), nullable=False, default=utc_now, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class OutputSchema(Base):
+    """A JSON-Schema style output contract for one workflow type (F3)."""
+
+    __tablename__ = "output_schemas"
+    __table_args__ = (
+        UniqueConstraint("workflow_type", name="uq_output_schemas_workflow_type"),
+    )
+
+    schema_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workflow_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime(), nullable=False, default=utc_now, server_default=text("CURRENT_TIMESTAMP")
     )

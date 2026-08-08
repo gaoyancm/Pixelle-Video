@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from pixelle_video.media_jobs.models import MediaJob, utc_now
 
 from .contracts import AssetDirection, AssetKind, AssetState
-from .models import MediaAsset, MediaJobAsset
+from .models import MediaAsset, MediaJobAsset, OutputSchema
 
 
 class AssetIdempotencyConflictError(RuntimeError):
@@ -348,6 +348,20 @@ class AssetRepository:
     async def get_job(self, job_id: str) -> MediaJob | None:
         async with self._session_factory() as session:
             return await session.get(MediaJob, job_id)
+
+    async def get_output_schema(self, workflow_type: str) -> OutputSchema | None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(OutputSchema).where(OutputSchema.workflow_type == workflow_type)
+            )
+            return result.scalar_one_or_none()
+
+    async def list_output_schemas(self) -> list[OutputSchema]:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(OutputSchema).order_by(OutputSchema.workflow_type.asc())
+            )
+            return list(result.scalars())
 
     async def _classify_output_registration(
         self,

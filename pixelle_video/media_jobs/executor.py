@@ -8,7 +8,7 @@ import mimetypes
 import re
 from datetime import timedelta
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from pixelle_video.services.comfyui_adapter import (
     ComfyUIAdapter,
@@ -92,6 +92,7 @@ class RecoverableComfyUIExecutor:
         managed_output_root: str | Path,
         history_poll_interval_seconds: float = 2.0,
         asset_service: AssetService | None = None,
+        output_validator: Callable[[str], Awaitable[Any]] | None = None,
         clock=utc_now,
     ):
         self.repository = repository
@@ -100,6 +101,7 @@ class RecoverableComfyUIExecutor:
         self.asset_service = asset_service
         self.output_root = Path(managed_output_root).resolve()
         self.history_poll_interval_seconds = history_poll_interval_seconds
+        self.output_validator = output_validator
         self._clock = clock
 
     async def process(self, job: MediaJob, lease: LeaseHandle) -> None:
@@ -290,12 +292,13 @@ class RecoverableComfyUIExecutor:
         lease: LeaseHandle,
         remote_job: ComfyUIJob,
     ) -> None:
+        validation_message = await self._validate_outputs_diagnostic(job)
         if (
             self.asset_service is not None
             and await self.asset_service.repository.has_output_relations(job.job_id)
         ):
             if await self.asset_service.validate_committed_output_group(job.job_id):
-                await self._finish(job, lease, JobStatus.SUCCEEDED, None, None)
+                await self._finish(job, lease, JobStatus.SUCCEEDED, None, validation_message)
             else:
                 await self._finish(
                     job,
@@ -354,7 +357,7 @@ class RecoverableComfyUIExecutor:
                 lease,
                 JobStatus.SUCCEEDED,
                 None,
-                None,
+                validation_message,
             )
         except LeaseLostError:
             if not registered:
@@ -382,6 +385,21 @@ class RecoverableComfyUIExecutor:
                 )
                 return
             await self._release_later(lease)
+
+    async def _validate_outputs_diagnostic(self, job: MediaJob) -> str | None:
+        """Run the optional F3 output contract validator; never blocks completion."""
+        if self.output_validator is None:
+            return None
+        try:
+            result = await self.output_validator(job.job_id)
+        except Exception:
+            return None
+        issues = getattr(result, "issues", ())
+        if not issues:
+            return None
+        critical = [issue for issue in issues if getattr(issue, "severity", "") == "critical"]
+        count = len(critical) or len(issues)
+        return f"output contract validation found {count} issue(s)"
 
     async def _reconcile_unknown(self, job: MediaJob, lease: LeaseHandle) -> None:
         if job.error_category != ErrorCategory.SUBMISSION_UNKNOWN.value:

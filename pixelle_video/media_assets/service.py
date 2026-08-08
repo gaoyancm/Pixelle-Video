@@ -22,6 +22,7 @@ from .contracts import (
 from .models import MediaAsset
 from .repository import AssetRepository
 from .store import LocalAssetStore
+from .validation import ValidationResult, validate_outputs
 
 
 class AssetNotFoundError(RuntimeError):
@@ -184,6 +185,72 @@ class AssetService:
             ):
                 return False
         return True
+
+    async def validate_output_contract(self, job_id: str, schema: dict) -> ValidationResult:
+        """Validate a completed job's committed outputs against an output schema.
+
+        This is a diagnostic tool: it returns issues but never blocks completion.
+        """
+        from .validation import ValidationIssue
+
+        relations = await self.repository.output_assets_for_job(job_id)
+        job = await self.repository.get_job(job_id)
+        if job is None or not relations:
+            issue = ValidationIssue(
+                severity="critical",
+                field="outputs[0].exists",
+                expected=True,
+                actual=False,
+                message="expected output asset is missing",
+            )
+            return ValidationResult(passed=False, issues=(issue,))
+        projections = {entry.get("output_id"): entry for entry in job.output_metadata}
+        outputs = []
+        for relation, asset in relations:
+            projection = projections.get(asset.id, {})
+            outputs.append(
+                {
+                    "exists": self.store.exists(asset.object_key),
+                    "mime_type": asset.mime_type,
+                    "size_bytes": asset.size_bytes,
+                    "duration": projection.get("duration"),
+                    "width": projection.get("width"),
+                    "height": projection.get("height"),
+                }
+            )
+        return validate_outputs(schema=schema, outputs=outputs)
+
+    async def validate_and_record_output_contract(
+        self,
+        job_id: str,
+        *,
+        audit=None,
+        operator: str = "system",
+    ) -> ValidationResult:
+        """Look up the workflow schema, validate, and record every issue in the audit trail."""
+        job = await self.repository.get_job(job_id)
+        if job is None:
+            return ValidationResult(passed=True)
+        schema_row = await self.repository.get_output_schema(job.workflow_type)
+        if schema_row is None:
+            return ValidationResult(passed=True)
+        result = await self.validate_output_contract(job_id, schema_row.schema_json)
+        if audit is not None and result.issues:
+            try:
+                await audit.record(
+                    event_type="output_validated",
+                    scope_type="job",
+                    scope_id=job_id,
+                    operator=operator,
+                    details={
+                        "workflow_type": job.workflow_type,
+                        "passed": result.passed,
+                        "issues": result.to_payloads(),
+                    },
+                )
+            except Exception:
+                pass
+        return result
 
     def discard_unregistered(self, asset: MediaAsset) -> None:
         if self.store.exists(asset.object_key):
