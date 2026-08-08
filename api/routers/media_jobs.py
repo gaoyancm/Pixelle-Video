@@ -12,6 +12,7 @@ from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 
 from api.dependencies import MediaJobServiceDep
+from api.schemas.audit_budget import ApprovalRequest
 from api.schemas.media_jobs import (
     ErrorResponse,
     MediaJobError,
@@ -22,10 +23,12 @@ from api.schemas.media_jobs import (
     validate_idempotency_key,
 )
 from api.services.media_jobs import (
+    JobNotApprovalableError,
     JobNotCancelableError,
     JobNotFoundError,
     JobNotRetryableError,
 )
+from pixelle_video.budget import BudgetBlockedError
 from pixelle_video.media_assets import AssetNotFoundError, AssetUnavailableError
 from pixelle_video.media_jobs import IdempotencyConflictError, MediaJobsDisabledError
 from pixelle_video.media_jobs.models import MediaJob
@@ -38,8 +41,10 @@ from pixelle_video.media_migration import (
 )
 
 
-def _error(status: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse(status_code=status, content={"error": {"code": code, "message": message}})
+def _error(status: int, code: str, message: str, **extra) -> JSONResponse:
+    return JSONResponse(
+        status_code=status, content={"error": {"code": code, "message": message, **extra}}
+    )
 
 
 class MediaJobRoute(APIRoute):
@@ -61,6 +66,18 @@ class MediaJobRoute(APIRoute):
                 return _error(409, "job_not_cancelable", "The media job cannot be cancelled.")
             except JobNotRetryableError:
                 return _error(409, "job_not_retryable", "The media job cannot be retried.")
+            except JobNotApprovalableError:
+                return _error(
+                    409, "job_not_approvalable", "The media job cannot accept this approval action."
+                )
+            except BudgetBlockedError as exc:
+                return _error(
+                    429,
+                    "budget_limit_exceeded",
+                    str(exc),
+                    limit=exc.limit,
+                    estimated=exc.estimated,
+                )
             except IdempotencyConflictError:
                 return _error(409, "idempotency_conflict", "The idempotency key conflicts.")
             except (AssetNotFoundError, AssetUnavailableError, ValueError):
@@ -205,3 +222,26 @@ async def retry_media_job(
     job, created = await service.retry(job_id, _key(idempotency_key))
     response.status_code = 201 if created else 200
     return _view(job)
+
+
+@router.post("/{job_id}/request-approval", response_model=MediaJobResponse)
+async def request_approval(
+    job_id: str,
+    service: MediaJobServiceDep,
+    body: ApprovalRequest | None = None,
+):
+    return _view(await service.request_approval(job_id, reason=body.reason if body else None))
+
+
+@router.post("/{job_id}/approve", response_model=MediaJobResponse)
+async def approve_media_job(job_id: str, service: MediaJobServiceDep):
+    return _view(await service.approve(job_id))
+
+
+@router.post("/{job_id}/reject", response_model=MediaJobResponse)
+async def reject_media_job(
+    job_id: str,
+    service: MediaJobServiceDep,
+    body: ApprovalRequest | None = None,
+):
+    return _view(await service.reject(job_id, reason=body.reason if body else None))

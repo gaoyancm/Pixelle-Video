@@ -7,6 +7,8 @@ from collections.abc import Callable
 from datetime import timedelta
 
 from api.schemas.media_jobs import MediaJobRequest
+from pixelle_video.audit import AuditRepository
+from pixelle_video.budget import BudgetService
 from pixelle_video.config.schema import MediaJobsConfig
 from pixelle_video.media_assets import AssetService, AssetUnavailableError
 from pixelle_video.media_jobs import (
@@ -17,7 +19,7 @@ from pixelle_video.media_jobs import (
     MediaJobsDisabledError,
 )
 from pixelle_video.media_jobs.models import MediaJob, utc_now
-from pixelle_video.media_jobs.state_machine import JobStatus, can_cancel
+from pixelle_video.media_jobs.state_machine import ErrorCategory, JobStatus, can_cancel
 from pixelle_video.services.comfyui_workflows import get_workflow_spec
 
 
@@ -31,6 +33,10 @@ class JobNotCancelableError(RuntimeError):
 
 class JobNotRetryableError(RuntimeError):
     pass
+
+
+class JobNotApprovalableError(RuntimeError):
+    """The media job is not in a state that accepts human approval actions."""
 
 
 def _scoped_key(operation: str, raw_key: str, source_job_id: str = "") -> str:
@@ -48,14 +54,21 @@ class MediaJobApplicationService:
         assets: AssetService | None = None,
         *,
         node_selector: Callable[[str], str],
+        budget: BudgetService | None = None,
+        audit: AuditRepository | None = None,
     ):
         self.repository = repository
         self.config = config
         self.assets = assets
         self.node_selector = node_selector
+        self.budget = budget
+        self.audit = audit
 
     async def create(self, request: MediaJobRequest, idempotency_key: str) -> tuple[MediaJob, bool]:
         spec = get_workflow_spec(request.workflow)
+        budget_decision = None
+        if self.budget is not None:
+            budget_decision = await self.budget.check_job_creation(request.workflow)
         try:
             node_id = self.node_selector(spec.workflow_type)
         except RuntimeError:
@@ -84,6 +97,14 @@ class MediaJobApplicationService:
             if self.assets is not None
             else await self.repository.create_job(create)
         )
+        if self.budget is not None and result.created and budget_decision is not None:
+            await self.budget.record_job_cost(
+                result.job.job_id,
+                status=JobStatus(result.job.status),
+                expected_version=result.job.version,
+                estimated_cost=budget_decision.estimated_cost,
+                budget_warning=budget_decision.warning,
+            )
         return result.job, result.created
 
     async def get(self, job_id: str) -> MediaJob:
@@ -131,3 +152,81 @@ class MediaJobApplicationService:
         except ValueError:
             raise JobNotRetryableError from None
         return result.job, result.created
+
+    async def request_approval(self, job_id: str, reason: str | None = None) -> MediaJob:
+        """Suspend a running job into awaiting_human for a human decision."""
+        for _ in range(3):
+            job = await self.get(job_id)
+            if job.status != JobStatus.RUNNING.value:
+                raise JobNotApprovalableError
+            try:
+                updated = await self.repository.transition_status(
+                    job_id,
+                    expected_status=JobStatus.RUNNING,
+                    expected_version=job.version,
+                    target_status=JobStatus.AWAITING_HUMAN,
+                )
+            except CASConflictError:
+                continue
+            await self._record_approval_audit(
+                event_type="approval_requested", job_id=job_id, reason=reason
+            )
+            return updated
+        raise JobNotApprovalableError
+
+    async def approve(self, job_id: str) -> MediaJob:
+        """Resume an awaiting_human job back to running."""
+        for _ in range(3):
+            job = await self.get(job_id)
+            if job.status != JobStatus.AWAITING_HUMAN.value:
+                raise JobNotApprovalableError
+            try:
+                updated = await self.repository.transition_status(
+                    job_id,
+                    expected_status=JobStatus.AWAITING_HUMAN,
+                    expected_version=job.version,
+                    target_status=JobStatus.RUNNING,
+                )
+            except CASConflictError:
+                continue
+            await self._record_approval_audit(event_type="approval_granted", job_id=job_id)
+            return updated
+        raise JobNotApprovalableError
+
+    async def reject(self, job_id: str, reason: str | None = None) -> MediaJob:
+        """Reject an awaiting_human job; the reason is recorded in the audit trail."""
+        for _ in range(3):
+            job = await self.get(job_id)
+            if job.status != JobStatus.AWAITING_HUMAN.value:
+                raise JobNotApprovalableError
+            try:
+                updated = await self.repository.transition_status(
+                    job_id,
+                    expected_status=JobStatus.AWAITING_HUMAN,
+                    expected_version=job.version,
+                    target_status=JobStatus.CANCELLED,
+                    error_category=ErrorCategory.CANCELLED,
+                    error_message=reason or "rejected by human operator",
+                )
+            except CASConflictError:
+                continue
+            await self._record_approval_audit(
+                event_type="approval_rejected", job_id=job_id, reason=reason
+            )
+            return updated
+        raise JobNotApprovalableError
+
+    async def _record_approval_audit(
+        self, *, event_type: str, job_id: str, reason: str | None = None
+    ) -> None:
+        if self.audit is None:
+            return
+        try:
+            await self.audit.record(
+                event_type=event_type,
+                scope_type="job",
+                scope_id=job_id,
+                details={"reason": reason} if reason is not None else None,
+            )
+        except Exception:
+            return

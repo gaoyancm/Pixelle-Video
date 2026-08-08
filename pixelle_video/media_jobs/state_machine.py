@@ -14,6 +14,7 @@ class JobStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     TIMED_OUT = "timed_out"
+    AWAITING_HUMAN = "awaiting_human"
 
 
 class ErrorCategory(str, Enum):
@@ -78,6 +79,14 @@ LEGAL_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
             JobStatus.FAILED,
             JobStatus.CANCELLED,
             JobStatus.TIMED_OUT,
+            JobStatus.AWAITING_HUMAN,
+        }
+    ),
+    JobStatus.AWAITING_HUMAN: frozenset(
+        {
+            JobStatus.RUNNING,
+            JobStatus.CANCELLED,
+            JobStatus.FAILED,
         }
     ),
     JobStatus.SUCCEEDED: frozenset(),
@@ -112,7 +121,12 @@ def is_terminal(status: JobStatus) -> bool:
 
 
 def can_cancel(status: JobStatus) -> bool:
-    return status in {JobStatus.QUEUED, JobStatus.SUBMITTING, JobStatus.RUNNING}
+    return status in {
+        JobStatus.QUEUED,
+        JobStatus.SUBMITTING,
+        JobStatus.RUNNING,
+        JobStatus.AWAITING_HUMAN,
+    }
 
 
 def can_retry(status: JobStatus, error_category: ErrorCategory | None) -> bool:

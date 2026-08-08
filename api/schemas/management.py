@@ -191,6 +191,7 @@ class ProgressCounts(StrictModel):
     queued: int
     submitting: int
     running: int
+    awaiting_human: int = 0
     cancel_requested: int
     succeeded: int
     failed: int

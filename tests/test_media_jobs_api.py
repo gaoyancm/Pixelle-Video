@@ -691,7 +691,8 @@ def test_router_ast_dependencies_and_app_boundaries_remain_isolated():
     assert "/api/tasks/{task_id}" in paths
     assert "/api/video/generate/sync" in paths
     assert "/api/video/generate/async" in paths
-    assert sum(path.startswith("/api/media/jobs") for path in paths) == 4
+    # 03-F adds request-approval, approve, and reject to the phase 02-C four paths.
+    assert sum(path.startswith("/api/media/jobs") for path in paths) == 7
 
 
 def test_importing_new_router_has_no_database_or_worker_side_effect(monkeypatch):
@@ -702,7 +703,8 @@ def test_importing_new_router_has_no_database_or_worker_side_effect(monkeypatch)
 
     monkeypatch.setattr(dependencies.MediaJobsDatabase, "connect", forbidden_connect)
     reloaded = importlib.reload(importlib.import_module("api.routers.media_jobs"))
-    assert len(reloaded.router.routes) == 5
+    # 03-F approval endpoints: request-approval, approve, reject.
+    assert len(reloaded.router.routes) == 8
 
 
 def test_openapi_contains_exactly_the_five_phase2c_operations():
@@ -713,7 +715,8 @@ def test_openapi_contains_exactly_the_five_phase2c_operations():
         for path, methods in app.openapi()["paths"].items()
         if path.startswith("/api/media/jobs")
     )
-    assert operations == 5
+    # 03-F approval endpoints extend the five phase 02-C operations.
+    assert operations == 8
     schema = app.openapi()
     request_schema = schema["components"]["schemas"]["MediaJobRequest"]
     response_schema = schema["components"]["schemas"]["MediaJobResponse"]
