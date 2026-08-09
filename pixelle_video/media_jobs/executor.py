@@ -557,7 +557,9 @@ class RecoverableComfyUIExecutor:
         temporary.write_bytes(content)
         temporary.replace(destination)
 
-    async def _remove_outputs(self, outputs: list[MediaOutputMetadata], generated_assets=None) -> None:
+    async def _remove_outputs(
+        self, outputs: list[MediaOutputMetadata], generated_assets=None
+    ) -> None:
         if self.asset_service is not None:
             for asset in generated_assets or []:
                 self.asset_service.discard_unregistered(asset)
@@ -567,9 +569,7 @@ class RecoverableComfyUIExecutor:
             await asyncio.to_thread(path.unlink, missing_ok=True)
 
     async def _release_later(self, lease: LeaseHandle) -> None:
-        next_attempt = self._clock() + timedelta(
-            seconds=self.history_poll_interval_seconds
-        )
+        next_attempt = self._clock() + timedelta(seconds=self.history_poll_interval_seconds)
         await lease.mutate(
             lambda status, version: self.repository.release_owned(
                 lease.job_id,
