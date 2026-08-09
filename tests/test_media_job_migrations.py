@@ -55,7 +55,7 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "0006_add_prompt_templates"
+        assert revision == "0007_add_qc_rules"
     finally:
         engine.dispose()
 

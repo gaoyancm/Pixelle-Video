@@ -25,6 +25,7 @@ from loguru import logger
 from api.services.management import ManagementApplicationService
 from api.services.media_jobs import MediaJobApplicationService
 from api.services.prompts import PromptApplicationService
+from api.services.qc import QCApplicationService
 from pixelle_video.audit import AuditRepository
 from pixelle_video.budget import BudgetRepository, BudgetService
 from pixelle_video.config.manager import ConfigManager
@@ -32,6 +33,8 @@ from pixelle_video.management import ManagementRepository
 from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
 from pixelle_video.media_jobs import MediaJobRepository, MediaJobsDatabase
 from pixelle_video.prompts.repository import PromptRepository
+from pixelle_video.qc.executor import QCExecutor
+from pixelle_video.qc.repository import QCRepository
 from pixelle_video.service import PixelleVideoCore
 from pixelle_video.services.comfyui_adapter import select_comfyui_node
 
@@ -44,6 +47,7 @@ _management_service: ManagementApplicationService | None = None
 _audit_repository: AuditRepository | None = None
 _budget_service: BudgetService | None = None
 _prompt_service: PromptApplicationService | None = None
+_qc_service: QCApplicationService | None = None
 
 
 async def get_pixelle_video() -> PixelleVideoCore:
@@ -191,9 +195,47 @@ async def get_prompt_service() -> PromptApplicationService:
     return _prompt_service
 
 
+async def get_qc_service() -> QCApplicationService:
+    """Lazily build the QC pipeline service on the shared media-jobs database."""
+
+    global _qc_service, _media_jobs_database
+    if _qc_service is None:
+        manager = ConfigManager()
+        config = manager.config.media_jobs
+        if _media_jobs_database is None:
+            _media_jobs_database = MediaJobsDatabase(config)
+        sessions = _media_jobs_database.connect()
+        job_repository = MediaJobRepository(sessions)
+
+        async def resolve_output_path(job_id: str) -> str | None:
+            assets = await get_media_asset_service()
+            rows = await assets.repository.output_assets_for_job(job_id)
+            if not rows:
+                return None
+            _relation, asset = rows[0]
+            if asset.state != "available" or not asset.object_key:
+                return None
+            try:
+                return str(assets.store.local_path(asset.object_key))
+            except Exception:
+                return None
+
+        executor = QCExecutor(
+            QCRepository(sessions),
+            job_lookup=job_repository.get_job,
+            output_path_resolver=resolve_output_path,
+        )
+        _qc_service = QCApplicationService(
+            QCRepository(sessions),
+            executor,
+            audit=await get_audit_service(),
+        )
+    return _qc_service
+
+
 async def shutdown_media_jobs() -> None:
     global _management_service, _media_assets_service, _media_jobs_database
-    global _media_jobs_service, _audit_repository, _budget_service, _prompt_service
+    global _media_jobs_service, _audit_repository, _budget_service, _prompt_service, _qc_service
     if _media_jobs_database is not None:
         await _media_jobs_database.dispose()
     _media_jobs_database = None
@@ -203,6 +245,7 @@ async def shutdown_media_jobs() -> None:
     _audit_repository = None
     _budget_service = None
     _prompt_service = None
+    _qc_service = None
 
 
 # Type alias for dependency injection
@@ -213,3 +256,4 @@ ManagementServiceDep = Annotated[ManagementApplicationService, Depends(get_manag
 AuditServiceDep = Annotated[AuditRepository, Depends(get_audit_service)]
 BudgetServiceDep = Annotated[BudgetService, Depends(get_budget_service)]
 PromptServiceDep = Annotated[PromptApplicationService, Depends(get_prompt_service)]
+QCServiceDep = Annotated[QCApplicationService, Depends(get_qc_service)]

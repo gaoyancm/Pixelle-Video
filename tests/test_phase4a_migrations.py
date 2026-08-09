@@ -12,8 +12,8 @@ from sqlalchemy import create_engine, inspect, text
 from pixelle_video.media_jobs.database import sqlite_url_for_path
 
 PROJECT_ROOT = Path(__file__).parents[1]
-PREVIOUS_REVISION = "0005_add_audit_and_budget"
-HEAD_REVISION = "0006_add_prompt_templates"
+PREVIOUS_REVISION = "0006_add_prompt_templates"
+HEAD_REVISION = "0007_add_qc_rules"
 NEW_TABLES = {
     "prompt_templates",
     "prompt_versions",
@@ -135,7 +135,7 @@ def test_downgrade_removes_phase4a_tables(tmp_path: Path) -> None:
     path = tmp_path / "round-trip.db"
     value = config(path)
     command.upgrade(value, "head")
-    command.downgrade(value, PREVIOUS_REVISION)
+    command.downgrade(value, "0005_add_audit_and_budget")
     engine = create_engine(sync_url(path))
     try:
         assert NEW_TABLES.isdisjoint(set(inspect(engine).get_table_names()))
