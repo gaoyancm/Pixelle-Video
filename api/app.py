@@ -53,6 +53,7 @@ from api.routers import (
     frame_router,
     health_router,
     image_router,
+    knowledge_router,
     llm_router,
     management_router,
     media_assets_router,
@@ -151,6 +152,7 @@ app.include_router(audit_budget_router, prefix=api_config.api_prefix)
 app.include_router(prompts_router, prefix=api_config.api_prefix)
 app.include_router(qc_router, prefix=api_config.api_prefix)
 app.include_router(experiments_router, prefix=api_config.api_prefix)
+app.include_router(knowledge_router, prefix=api_config.api_prefix)
 
 
 @app.get("/")

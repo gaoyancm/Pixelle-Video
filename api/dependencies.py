@@ -23,6 +23,7 @@ from fastapi import Depends
 from loguru import logger
 
 from api.services.experiments import ExperimentApplicationService
+from api.services.knowledge import KnowledgeApplicationService
 from api.services.management import ManagementApplicationService
 from api.services.media_jobs import MediaJobApplicationService
 from api.services.prompts import PromptApplicationService
@@ -31,6 +32,7 @@ from pixelle_video.audit import AuditRepository
 from pixelle_video.budget import BudgetRepository, BudgetService
 from pixelle_video.config.manager import ConfigManager
 from pixelle_video.experiments.repository import ExperimentRepository
+from pixelle_video.knowledge.repository import KnowledgeRepository
 from pixelle_video.management import ManagementRepository
 from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
 from pixelle_video.media_jobs import MediaJobRepository, MediaJobsDatabase
@@ -51,6 +53,7 @@ _budget_service: BudgetService | None = None
 _prompt_service: PromptApplicationService | None = None
 _qc_service: QCApplicationService | None = None
 _experiment_service: ExperimentApplicationService | None = None
+_knowledge_service: KnowledgeApplicationService | None = None
 
 
 async def get_pixelle_video() -> PixelleVideoCore:
@@ -239,7 +242,7 @@ async def get_qc_service() -> QCApplicationService:
 async def shutdown_media_jobs() -> None:
     global _management_service, _media_assets_service, _media_jobs_database
     global _media_jobs_service, _audit_repository, _budget_service, _prompt_service, _qc_service
-    global _experiment_service
+    global _experiment_service, _knowledge_service
     if _media_jobs_database is not None:
         await _media_jobs_database.dispose()
     _media_jobs_database = None
@@ -251,6 +254,7 @@ async def shutdown_media_jobs() -> None:
     _prompt_service = None
     _qc_service = None
     _experiment_service = None
+    _knowledge_service = None
 
 
 async def get_experiment_service() -> ExperimentApplicationService:
@@ -282,6 +286,22 @@ async def get_experiment_service() -> ExperimentApplicationService:
     return _experiment_service
 
 
+async def get_knowledge_service() -> KnowledgeApplicationService:
+    """Lazily build the knowledge base service on the shared media-jobs database."""
+
+    global _knowledge_service, _media_jobs_database
+    if _knowledge_service is None:
+        manager = ConfigManager()
+        config = manager.config.media_jobs
+        if _media_jobs_database is None:
+            _media_jobs_database = MediaJobsDatabase(config)
+        _knowledge_service = KnowledgeApplicationService(
+            KnowledgeRepository(_media_jobs_database.connect()),
+            audit=await get_audit_service(),
+        )
+    return _knowledge_service
+
+
 # Type alias for dependency injection
 PixelleVideoDep = Annotated[PixelleVideoCore, Depends(get_pixelle_video)]
 MediaJobServiceDep = Annotated[MediaJobApplicationService, Depends(get_media_job_service)]
@@ -292,3 +312,4 @@ BudgetServiceDep = Annotated[BudgetService, Depends(get_budget_service)]
 PromptServiceDep = Annotated[PromptApplicationService, Depends(get_prompt_service)]
 QCServiceDep = Annotated[QCApplicationService, Depends(get_qc_service)]
 ExperimentServiceDep = Annotated[ExperimentApplicationService, Depends(get_experiment_service)]
+KnowledgeServiceDep = Annotated[KnowledgeApplicationService, Depends(get_knowledge_service)]

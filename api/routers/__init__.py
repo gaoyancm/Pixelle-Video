@@ -21,6 +21,7 @@ from api.routers.files import router as files_router
 from api.routers.frame import router as frame_router
 from api.routers.health import router as health_router
 from api.routers.image import router as image_router
+from api.routers.knowledge import router as knowledge_router
 from api.routers.llm import router as llm_router
 from api.routers.management import router as management_router
 from api.routers.media_assets import router as media_assets_router
@@ -49,5 +50,6 @@ __all__ = [
     "audit_budget_router",
     "prompts_router",
     "qc_router",
+    "knowledge_router",
     "experiments_router",
 ]

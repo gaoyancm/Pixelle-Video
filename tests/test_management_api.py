@@ -949,9 +949,10 @@ def test_openapi_has_exactly_twenty_authorized_phase3_management_operations():
         path: methods for path, methods in schema["paths"].items() if path.startswith("/api/admin")
     }
     # 03-F adds five audit/budget operations, 04-A adds fifteen prompt
-    # operations, 04-B adds nine QC operations, and 04-C adds nine experiment
-    # operations on top of the twenty phase 03 ones.
-    assert sum(len(methods) for methods in paths.values()) == 58
+    # operations, 04-B adds nine QC operations, 04-C adds nine experiment
+    # operations, and 04-D adds ten knowledge operations on top of the
+    # twenty phase 03 ones.
+    assert sum(len(methods) for methods in paths.values()) == 68
     serialized = str(paths).lower()
     for forbidden in ("node_id", "provider", "prompt_id", "submission_token", "base_url"):
         assert forbidden not in serialized
