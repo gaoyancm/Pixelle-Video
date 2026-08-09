@@ -8,6 +8,7 @@ from pixelle_video.experiments.models import (
     FailureSample,
 )
 from pixelle_video.experiments.repository import ExperimentRepository
+from pixelle_video.experiments.stats import ExperimentStats
 
 __all__ = [
     "Experiment",
@@ -18,4 +19,5 @@ __all__ = [
     "ExperimentMetrics",
     "JobMetrics",
     "GroupMetrics",
+    "ExperimentStats",
 ]
