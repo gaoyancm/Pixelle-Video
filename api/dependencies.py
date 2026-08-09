@@ -187,9 +187,7 @@ async def get_prompt_service() -> PromptApplicationService:
         config = manager.config.media_jobs
         if _media_jobs_database is None:
             _media_jobs_database = MediaJobsDatabase(config)
-        _prompt_service = PromptApplicationService(
-            PromptRepository(_media_jobs_database.connect())
-        )
+        _prompt_service = PromptApplicationService(PromptRepository(_media_jobs_database.connect()))
     return _prompt_service
 
 
