@@ -93,6 +93,7 @@ class RecoverableComfyUIExecutor:
         history_poll_interval_seconds: float = 2.0,
         asset_service: AssetService | None = None,
         output_validator: Callable[[str], Awaitable[Any]] | None = None,
+        qc_runner: Callable[[str], Awaitable[Any]] | None = None,
         clock=utc_now,
     ):
         self.repository = repository
@@ -102,6 +103,7 @@ class RecoverableComfyUIExecutor:
         self.output_root = Path(managed_output_root).resolve()
         self.history_poll_interval_seconds = history_poll_interval_seconds
         self.output_validator = output_validator
+        self.qc_runner = qc_runner
         self._clock = clock
 
     async def process(self, job: MediaJob, lease: LeaseHandle) -> None:
@@ -293,6 +295,7 @@ class RecoverableComfyUIExecutor:
         remote_job: ComfyUIJob,
     ) -> None:
         validation_message = await self._validate_outputs_diagnostic(job)
+        await self._run_qc_diagnostic(job)
         if (
             self.asset_service is not None
             and await self.asset_service.repository.has_output_relations(job.job_id)
@@ -400,6 +403,15 @@ class RecoverableComfyUIExecutor:
         critical = [issue for issue in issues if getattr(issue, "severity", "") == "critical"]
         count = len(critical) or len(issues)
         return f"output contract validation found {count} issue(s)"
+
+    async def _run_qc_diagnostic(self, job: MediaJob) -> None:
+        """Run the optional phase 04-B QC runner on the same succeeded hook."""
+        if self.qc_runner is None:
+            return
+        try:
+            await self.qc_runner(job.job_id)
+        except Exception:
+            return
 
     async def _reconcile_unknown(self, job: MediaJob, lease: LeaseHandle) -> None:
         if job.error_category != ErrorCategory.SUBMISSION_UNKNOWN.value:
