@@ -115,4 +115,3 @@ async def api_env(env):
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         yield client, repository, service
-
