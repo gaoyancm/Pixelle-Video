@@ -16,6 +16,7 @@ API Routers
 
 from api.routers.audit_budget import router as audit_budget_router
 from api.routers.content import router as content_router
+from api.routers.experiments import router as experiments_router
 from api.routers.files import router as files_router
 from api.routers.frame import router as frame_router
 from api.routers.health import router as health_router
@@ -48,4 +49,5 @@ __all__ = [
     "audit_budget_router",
     "prompts_router",
     "qc_router",
+    "experiments_router",
 ]

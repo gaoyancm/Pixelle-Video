@@ -11,7 +11,8 @@ from fastapi.routing import APIRoute
 from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 
-from api.dependencies import PromptServiceDep
+from api.dependencies import ExperimentServiceDep, PromptServiceDep
+from api.schemas.experiments import FailureList
 from api.schemas.prompts import (
     AntiSlopResponse,
     BindTagsRequest,
@@ -213,3 +214,22 @@ async def bind_tags(template_id: str, body: BindTagsRequest, service: PromptServ
 async def check_quality(template_id: str, service: PromptServiceDep):
     report = await service.check_quality(template_id)
     return AntiSlopResponse(**report)
+
+
+@router.get("/{prompt_version_id}/failures", response_model=FailureList)
+async def prompt_failures(prompt_version_id: str, service: ExperimentServiceDep):
+    """Phase 04-C E4: failure samples that used this prompt version."""
+    samples = await service.prompt_failures(prompt_version_id)
+    return FailureList(
+        items=[
+            {
+                "id": sample.id,
+                "job_id": sample.job_id,
+                "prompt_version_id": sample.prompt_version_id,
+                "reason": sample.reason,
+                "qc_issues": sample.qc_issues_json,
+                "created_at": sample.created_at,
+            }
+            for sample in samples
+        ]
+    )

@@ -1,5 +1,6 @@
 """Phase 04-C experiment system package (E1 core)."""
 
+from pixelle_video.experiments.failure_feedback import FailureFeedbackEngine
 from pixelle_video.experiments.metrics import ExperimentMetrics, GroupMetrics, JobMetrics
 from pixelle_video.experiments.models import (
     Experiment,
@@ -20,4 +21,5 @@ __all__ = [
     "JobMetrics",
     "GroupMetrics",
     "ExperimentStats",
+    "FailureFeedbackEngine",
 ]

@@ -22,6 +22,7 @@ from typing import Annotated
 from fastapi import Depends
 from loguru import logger
 
+from api.services.experiments import ExperimentApplicationService
 from api.services.management import ManagementApplicationService
 from api.services.media_jobs import MediaJobApplicationService
 from api.services.prompts import PromptApplicationService
@@ -29,6 +30,7 @@ from api.services.qc import QCApplicationService
 from pixelle_video.audit import AuditRepository
 from pixelle_video.budget import BudgetRepository, BudgetService
 from pixelle_video.config.manager import ConfigManager
+from pixelle_video.experiments.repository import ExperimentRepository
 from pixelle_video.management import ManagementRepository
 from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
 from pixelle_video.media_jobs import MediaJobRepository, MediaJobsDatabase
@@ -48,6 +50,7 @@ _audit_repository: AuditRepository | None = None
 _budget_service: BudgetService | None = None
 _prompt_service: PromptApplicationService | None = None
 _qc_service: QCApplicationService | None = None
+_experiment_service: ExperimentApplicationService | None = None
 
 
 async def get_pixelle_video() -> PixelleVideoCore:
@@ -236,6 +239,7 @@ async def get_qc_service() -> QCApplicationService:
 async def shutdown_media_jobs() -> None:
     global _management_service, _media_assets_service, _media_jobs_database
     global _media_jobs_service, _audit_repository, _budget_service, _prompt_service, _qc_service
+    global _experiment_service
     if _media_jobs_database is not None:
         await _media_jobs_database.dispose()
     _media_jobs_database = None
@@ -246,6 +250,36 @@ async def shutdown_media_jobs() -> None:
     _budget_service = None
     _prompt_service = None
     _qc_service = None
+    _experiment_service = None
+
+
+async def get_experiment_service() -> ExperimentApplicationService:
+    """Lazily build the experiment service on the shared media-jobs database."""
+
+    global _experiment_service, _media_jobs_database
+    if _experiment_service is None:
+        manager = ConfigManager()
+        config = manager.config.media_jobs
+        if _media_jobs_database is None:
+            _media_jobs_database = MediaJobsDatabase(config)
+        sessions = _media_jobs_database.connect()
+        job_repository = MediaJobRepository(sessions)
+
+        async def resolve_output_size(job_id: str) -> int | None:
+            assets = await get_media_asset_service()
+            rows = await assets.repository.output_assets_for_job(job_id)
+            if not rows:
+                return None
+            _relation, asset = rows[0]
+            return asset.size_bytes
+
+        _experiment_service = ExperimentApplicationService(
+            ExperimentRepository(sessions),
+            job_lookup=job_repository.get_job,
+            audit=await get_audit_service(),
+            size_lookup=resolve_output_size,
+        )
+    return _experiment_service
 
 
 # Type alias for dependency injection
@@ -257,3 +291,4 @@ AuditServiceDep = Annotated[AuditRepository, Depends(get_audit_service)]
 BudgetServiceDep = Annotated[BudgetService, Depends(get_budget_service)]
 PromptServiceDep = Annotated[PromptApplicationService, Depends(get_prompt_service)]
 QCServiceDep = Annotated[QCApplicationService, Depends(get_qc_service)]
+ExperimentServiceDep = Annotated[ExperimentApplicationService, Depends(get_experiment_service)]
