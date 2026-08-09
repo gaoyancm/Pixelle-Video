@@ -12,11 +12,11 @@ from sqlalchemy import create_engine, inspect, text
 
 import pixelle_video.audit.models as _audit_models  # noqa: F401
 import pixelle_video.budget.models as _budget_models  # noqa: F401
+import pixelle_video.experiments.models as _experiment_models  # noqa: F401
 import pixelle_video.management.models as _management_models  # noqa: F401
 import pixelle_video.media_assets.models as _media_assets_models  # noqa: F401
 import pixelle_video.prompts.models as _prompt_models  # noqa: F401
 import pixelle_video.qc.models as _qc_models  # noqa: F401
-import pixelle_video.experiments.models as _experiment_models  # noqa: F401
 from pixelle_video.media_jobs.database import sqlite_url_for_path
 from pixelle_video.media_jobs.models import Base
 
