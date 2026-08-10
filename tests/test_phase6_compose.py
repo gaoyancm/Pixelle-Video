@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -257,7 +258,111 @@ async def test_get_video_service_wires_tts_into_composer(tmp_path, monkeypatch) 
     monkeypatch.setattr("api.dependencies.ConfigManager", lambda: fake_manager)
     monkeypatch.setattr(deps, "_video_service", None)
     monkeypatch.setattr(deps, "_media_jobs_database", None)
+    engine = create_async_engine(url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    await engine.dispose()
     service = await get_video_service()
     assert service.composer.tts_runner is not None
     assert service.composer.bgm_matcher is not None
     assert service.composer.asset_resolver is not None
+
+
+async def test_production_wiring_compose_end_to_end_with_audio(tmp_path, monkeypatch) -> None:
+    """Assertion de-faking: real get_video_service -> compose() without
+    errors -> ffprobe verifies the composed video carries an audio stream.
+    (TTS/BGM runners are swapped for ffmpeg-generated audio since the real
+    ComfyKit TTS cannot run offline; the rest of the production wiring,
+    including the async bgm_matcher contract and asset_resolver, is real.)"""
+    import subprocess
+
+    import api.dependencies as deps
+    from pixelle_video.config.schema import MediaJobsConfig
+    from pixelle_video.videos.repository import VideoScriptRepository
+
+    url = f"sqlite+aiosqlite:///{(tmp_path / 'e2e.db').as_posix()}"
+    fake_manager = SimpleNamespace(
+        config=SimpleNamespace(
+            media_jobs=MediaJobsConfig(enabled=True, database_url=url),
+            to_dict=lambda: {"comfyui": {}},
+        )
+    )
+    monkeypatch.setattr("api.dependencies.ConfigManager", lambda: fake_manager)
+    monkeypatch.setattr(deps, "_video_service", None)
+    monkeypatch.setattr(deps, "_media_jobs_database", None)
+    engine = create_async_engine(url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    await engine.dispose()
+    service = await get_video_service()
+    assert service.composer.tts_runner is not None
+    assert service.composer.bgm_matcher is not None
+
+    async def fake_tts(text: str) -> str:
+        audio = tmp_path / "voice.mp3"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"anullsrc=r=24000:cl=mono:d={max(len(text) // 10, 2)}",
+                "-c:a",
+                "libmp3lame",
+                str(audio),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return str(audio)
+
+    async def fake_bgm(emotion: str) -> str:
+        bgm = tmp_path / "bgm.mp3"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=8",
+                "-c:a",
+                "libmp3lame",
+                str(bgm),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return str(bgm)
+
+    service.composer.tts_runner = fake_tts
+    service.composer.bgm_matcher = fake_bgm
+    service.composer.work_dir = tmp_path / "work-e2e"
+
+    repository = VideoScriptRepository(
+        async_sessionmaker(create_async_engine(url), expire_on_commit=False)
+    )
+    script_id = await ScriptEngine(repository).generate_script(
+        topic="端到端合成测试", target_duration=20
+    )
+    payload = await service.compose(script_id["id"])
+    video = Path(payload["video"])
+    assert video.exists()
+
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_streams",
+            "-of",
+            "json",
+            str(video),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0
+    streams = json.loads(probe.stdout)["streams"]
+    assert any(stream["codec_type"] == "audio" for stream in streams)

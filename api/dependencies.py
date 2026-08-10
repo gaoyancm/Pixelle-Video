@@ -408,7 +408,7 @@ async def get_video_service() -> VideoApplicationService:
     return _video_service
 
 
-def _video_bgm_matcher(emotion: str) -> str | None:
+async def _video_bgm_matcher(emotion: str) -> str | None:
     """Deterministic emotion -> BGM mapping (reserved injection point)."""
     mapping = {"激昂": "bgm_energetic", "舒缓": "bgm_calm", "科技感": "bgm_tech"}
     return mapping.get(emotion)

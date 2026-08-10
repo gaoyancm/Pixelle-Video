@@ -204,7 +204,6 @@ class VideoPackager:
             "veryfast",
             "-pix_fmt",
             "yuv420p",
-            "-an",
             str(output),
         ]
         completed = subprocess.run(command, capture_output=True)
