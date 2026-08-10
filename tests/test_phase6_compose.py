@@ -129,25 +129,14 @@ async def test_composer_produces_playable_mp4(env, tmp_path: Path) -> None:
         )
         return str(audio)
 
-    async def fake_bgm(emotion: str) -> str:
-        bgm = tmp_path / "bgm.mp3"
-        _ffmpeg(
-            [
-                "ffmpeg",
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                "sine=frequency=440:duration=10",
-                "-c:a",
-                "libmp3lame",
-                str(bgm),
-            ]
-        )
-        return str(bgm)
+    # Real production bgm matcher: returns the actual bgm/default.mp3 path.
+    from api.dependencies import _video_bgm_matcher
 
     composer = Composer(
-        repository, tts_runner=fake_tts, bgm_matcher=fake_bgm, work_dir=str(tmp_path / "work")
+        repository,
+        tts_runner=fake_tts,
+        bgm_matcher=_video_bgm_matcher,
+        work_dir=str(tmp_path / "work"),
     )
     payload = await composer.compose(script_id)
     video = Path(payload["video"])
@@ -317,27 +306,9 @@ async def test_production_wiring_compose_end_to_end_with_audio(tmp_path, monkeyp
         )
         return str(audio)
 
-    async def fake_bgm(emotion: str) -> str:
-        bgm = tmp_path / "bgm.mp3"
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-f",
-                "lavfi",
-                "-i",
-                "sine=frequency=440:duration=8",
-                "-c:a",
-                "libmp3lame",
-                str(bgm),
-            ],
-            check=True,
-            capture_output=True,
-        )
-        return str(bgm)
-
     service.composer.tts_runner = fake_tts
-    service.composer.bgm_matcher = fake_bgm
+    # bgm_matcher stays the production-injected _video_bgm_matcher (real file).
+    assert service.composer.bgm_matcher is not None
     service.composer.work_dir = tmp_path / "work-e2e"
 
     repository = VideoScriptRepository(
@@ -366,3 +337,83 @@ async def test_production_wiring_compose_end_to_end_with_audio(tmp_path, monkeyp
     assert probe.returncode == 0
     streams = json.loads(probe.stdout)["streams"]
     assert any(stream["codec_type"] == "audio" for stream in streams)
+
+
+async def test_real_composer_produces_playable_mp4_with_audio_and_bgm(
+    tmp_path, monkeypatch
+) -> None:
+    """三修：真实 DI，不注入 fake_bgm——脚本含「激昂」情绪触发真实 BGM
+    匹配（bgm/default.mp3），端到端验证合成产物含 video+audio 流。"""
+    import subprocess
+
+    import api.dependencies as deps
+    from pixelle_video.config.schema import MediaJobsConfig
+
+    url = f"sqlite+aiosqlite:///{(tmp_path / 'real-bgm.db').as_posix()}"
+    fake_manager = SimpleNamespace(
+        config=SimpleNamespace(
+            media_jobs=MediaJobsConfig(enabled=True, database_url=url),
+            to_dict=lambda: {"comfyui": {}},
+        )
+    )
+    monkeypatch.setattr("api.dependencies.ConfigManager", lambda: fake_manager)
+    monkeypatch.setattr(deps, "_video_service", None)
+    monkeypatch.setattr(deps, "_media_jobs_database", None)
+    engine = create_async_engine(url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    await engine.dispose()
+
+    service = await get_video_service()
+    assert service.composer.bgm_matcher is not None
+
+    # Voice-over: real ComfyKit TTS cannot run offline, swap only the tts
+    # runner; the bgm matcher stays the production-injected one.
+    async def fake_tts(text: str) -> str:
+        audio = tmp_path / "voice.mp3"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"anullsrc=r=24000:cl=mono:d={max(len(text) // 10, 2)}",
+                "-c:a",
+                "libmp3lame",
+                str(audio),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return str(audio)
+
+    service.composer.tts_runner = fake_tts
+    service.composer.work_dir = tmp_path / "work-real-bgm"
+
+    repository = VideoScriptRepository(
+        async_sessionmaker(create_async_engine(url), expire_on_commit=False)
+    )
+    script = await ScriptEngine(repository).generate_script(
+        topic="AI 颠覆工作方式！", target_duration=20
+    )
+    # Script scenes with an exclamation trigger the 激昂 emotion profile.
+    result = await service.composer.compose(script["id"])
+    assert result["video"] is not None
+    probe = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_streams",
+            "-of",
+            "json",
+            str(Path(result["video"])),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0
+    streams = {stream["codec_type"] for stream in json.loads(probe.stdout)["streams"]}
+    assert "video" in streams
+    assert "audio" in streams
