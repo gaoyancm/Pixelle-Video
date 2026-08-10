@@ -1,4 +1,4 @@
-"""Phase 05 migration tests: product briefs table and head."""
+"""Phase 06 migration tests: video scripts table and head."""
 
 from __future__ import annotations
 
@@ -27,49 +27,48 @@ def sync_url(path: Path) -> str:
     return f"sqlite:///{path.resolve().as_posix()}"
 
 
-def test_phase5_migration_has_one_head_and_follows_0010() -> None:
+def test_phase6_migration_has_one_head_and_follows_0012() -> None:
     script = ScriptDirectory.from_config(config(Path("unused.db")))
     assert script.get_heads() == [HEAD_REVISION]
     revision = script.get_revision(HEAD_REVISION)
     assert revision is not None and revision.down_revision == PREVIOUS_REVISION
 
 
-def test_upgrade_creates_product_briefs_table(tmp_path: Path) -> None:
+def test_upgrade_creates_video_scripts_table(tmp_path: Path) -> None:
     path = tmp_path / "empty.db"
     command.upgrade(config(path), "head")
     engine = create_engine(sync_url(path))
     try:
         inspector = inspect(engine)
-        assert "product_briefs" in inspector.get_table_names()
-        columns = {column["name"] for column in inspector.get_columns("product_briefs")}
+        assert "video_scripts" in inspector.get_table_names()
+        columns = {column["name"] for column in inspector.get_columns("video_scripts")}
         assert {
             "id",
             "project_id",
-            "product_name",
-            "category",
-            "description",
-            "selling_points_json",
-            "target_audience",
-            "brand_profile_id",
-            "platforms_json",
-            "reference_images_json",
+            "topic",
+            "language",
+            "target_duration",
+            "platform",
+            "script_json",
+            "prompt_version_id",
             "status",
             "created_at",
             "updated_at",
         } <= columns
-        checks = {item["name"] for item in inspector.get_check_constraints("product_briefs")}
-        assert "ck_product_briefs_status" in checks
+        checks = {item["name"] for item in inspector.get_check_constraints("video_scripts")}
+        assert "ck_video_scripts_status" in checks
+        assert "ck_video_scripts_target_duration" in checks
     finally:
         engine.dispose()
 
 
-def test_downgrade_removes_product_briefs(tmp_path: Path) -> None:
+def test_downgrade_removes_video_scripts(tmp_path: Path) -> None:
     path = tmp_path / "round-trip.db"
     value = config(path)
     command.upgrade(value, "head")
-    command.downgrade(value, "0010_seed_knowledge")
+    command.downgrade(value, "0012_seed_ad_prompt")
     engine = create_engine(sync_url(path))
     try:
-        assert "product_briefs" not in inspect(engine).get_table_names()
+        assert "video_scripts" not in inspect(engine).get_table_names()
     finally:
         engine.dispose()

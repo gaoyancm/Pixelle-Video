@@ -19,12 +19,13 @@ import pixelle_video.media_assets.models as _media_assets_models  # noqa: F401
 import pixelle_video.products.models as _product_models  # noqa: F401
 import pixelle_video.prompts.models as _prompt_models  # noqa: F401
 import pixelle_video.qc.models as _qc_models  # noqa: F401
+import pixelle_video.videos.models as _video_models  # noqa: F401
 from pixelle_video.media_jobs.database import sqlite_url_for_path
 from pixelle_video.media_jobs.models import Base
 
 PROJECT_ROOT = Path(__file__).parents[1]
 PREVIOUS_REVISION = "0003_add_media_assets"
-HEAD_REVISION = "0012_seed_ad_prompt"
+HEAD_REVISION = "0013_add_video_scripts"
 MANAGEMENT_TABLES = {
     "projects",
     "production_batches",
@@ -54,7 +55,7 @@ def test_phase3a_migration_has_one_head_and_follows_0003():
     script = ScriptDirectory.from_config(config(Path("unused.db")))
     assert script.get_heads() == [HEAD_REVISION]
     revision = script.get_revision(HEAD_REVISION)
-    assert revision is not None and revision.down_revision == "0011_add_product_briefs"
+    assert revision is not None and revision.down_revision == "0012_seed_ad_prompt"
 
 
 def test_empty_upgrade_creates_six_tables_priority_constraints_and_indexes(tmp_path):

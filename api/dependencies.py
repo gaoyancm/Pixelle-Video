@@ -29,6 +29,7 @@ from api.services.media_jobs import MediaJobApplicationService
 from api.services.products import ProductApplicationService
 from api.services.prompts import PromptApplicationService
 from api.services.qc import QCApplicationService
+from api.services.videos import VideoApplicationService
 from pixelle_video.audit import AuditRepository
 from pixelle_video.budget import BudgetRepository, BudgetService
 from pixelle_video.config.manager import ConfigManager
@@ -47,6 +48,11 @@ from pixelle_video.qc.executor import QCExecutor
 from pixelle_video.qc.repository import QCRepository
 from pixelle_video.service import PixelleVideoCore
 from pixelle_video.services.comfyui_adapter import select_comfyui_node
+from pixelle_video.videos.compose import Composer
+from pixelle_video.videos.packager import VideoPackager
+from pixelle_video.videos.repository import VideoScriptRepository
+from pixelle_video.videos.script_engine import ScriptEngine
+from pixelle_video.videos.storyboard import StoryboardEngine
 
 # Global Pixelle-Video instance
 _pixelle_video_instance: PixelleVideoCore = None
@@ -61,6 +67,7 @@ _qc_service: QCApplicationService | None = None
 _experiment_service: ExperimentApplicationService | None = None
 _knowledge_service: KnowledgeApplicationService | None = None
 _product_service: ProductApplicationService | None = None
+_video_service: VideoApplicationService | None = None
 
 
 async def get_pixelle_video() -> PixelleVideoCore:
@@ -249,7 +256,7 @@ async def get_qc_service() -> QCApplicationService:
 async def shutdown_media_jobs() -> None:
     global _management_service, _media_assets_service, _media_jobs_database
     global _media_jobs_service, _audit_repository, _budget_service, _prompt_service, _qc_service
-    global _experiment_service, _knowledge_service, _product_service
+    global _experiment_service, _knowledge_service, _product_service, _video_service
     if _media_jobs_database is not None:
         await _media_jobs_database.dispose()
     _media_jobs_database = None
@@ -263,6 +270,7 @@ async def shutdown_media_jobs() -> None:
     _experiment_service = None
     _knowledge_service = None
     _product_service = None
+    _video_service = None
 
 
 async def get_experiment_service() -> ExperimentApplicationService:
@@ -351,6 +359,30 @@ async def get_product_service() -> ProductApplicationService:
     return _product_service
 
 
+async def get_video_service() -> VideoApplicationService:
+    """Lazily build the phase 06 short-video pipeline on shared repositories."""
+
+    global _video_service, _media_jobs_database
+    if _video_service is None:
+        manager = ConfigManager()
+        config = manager.config.media_jobs
+        if _media_jobs_database is None:
+            _media_jobs_database = MediaJobsDatabase(config)
+        sessions = _media_jobs_database.connect()
+        script_repository = VideoScriptRepository(sessions)
+        job_repository = MediaJobRepository(sessions)
+        _video_service = VideoApplicationService(
+            script_repository,
+            script_engine=ScriptEngine(script_repository, prompt_compiler=compile),
+            storyboard_engine=StoryboardEngine(script_repository, job_repository),
+            composer=Composer(script_repository),
+            packager=VideoPackager(script_repository, exports_root="exports"),
+            job_repository=job_repository,
+            prompt_compiler=compile,
+        )
+    return _video_service
+
+
 # Type alias for dependency injection
 PixelleVideoDep = Annotated[PixelleVideoCore, Depends(get_pixelle_video)]
 MediaJobServiceDep = Annotated[MediaJobApplicationService, Depends(get_media_job_service)]
@@ -363,3 +395,4 @@ QCServiceDep = Annotated[QCApplicationService, Depends(get_qc_service)]
 ExperimentServiceDep = Annotated[ExperimentApplicationService, Depends(get_experiment_service)]
 KnowledgeServiceDep = Annotated[KnowledgeApplicationService, Depends(get_knowledge_service)]
 ProductServiceDep = Annotated[ProductApplicationService, Depends(get_product_service)]
+VideoServiceDep = Annotated[VideoApplicationService, Depends(get_video_service)]

@@ -12,8 +12,8 @@ from sqlalchemy import create_engine, inspect, text
 from pixelle_video.media_jobs.database import sqlite_url_for_path
 
 PROJECT_ROOT = Path(__file__).parents[1]
-PREVIOUS_REVISION = "0011_add_product_briefs"
-HEAD_REVISION = "0012_seed_ad_prompt"
+PREVIOUS_REVISION = "0012_seed_ad_prompt"
+HEAD_REVISION = "0013_add_video_scripts"
 NEW_TABLES = {
     "prompt_templates",
     "prompt_versions",

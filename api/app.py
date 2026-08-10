@@ -65,6 +65,7 @@ from api.routers import (
     tasks_router,
     tts_router,
     video_router,
+    videos_router,
 )
 from api.tasks import task_manager
 
@@ -155,6 +156,7 @@ app.include_router(qc_router, prefix=api_config.api_prefix)
 app.include_router(experiments_router, prefix=api_config.api_prefix)
 app.include_router(knowledge_router, prefix=api_config.api_prefix)
 app.include_router(products_router, prefix=api_config.api_prefix)
+app.include_router(videos_router, prefix=api_config.api_prefix)
 
 
 @app.get("/")

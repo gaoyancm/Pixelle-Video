@@ -32,6 +32,7 @@ from api.routers.qc import router as qc_router
 from api.routers.resources import router as resources_router
 from api.routers.tasks import router as tasks_router
 from api.routers.tts import router as tts_router
+from api.routers.videos import router as videos_router
 from api.routers.video import router as video_router
 
 __all__ = [
