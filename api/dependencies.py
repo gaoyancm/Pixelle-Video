@@ -22,6 +22,7 @@ from typing import Annotated
 from fastapi import Depends
 from loguru import logger
 
+from api.services.anime import AnimeApplicationService
 from api.services.experiments import ExperimentApplicationService
 from api.services.knowledge import KnowledgeApplicationService
 from api.services.management import ManagementApplicationService
@@ -30,6 +31,9 @@ from api.services.products import ProductApplicationService
 from api.services.prompts import PromptApplicationService
 from api.services.qc import QCApplicationService
 from api.services.videos import VideoApplicationService
+from pixelle_video.anime.consistency import ConsistencyGuard
+from pixelle_video.anime.repository import AnimeRepository
+from pixelle_video.anime.shot_engine import ShotProductionEngine
 from pixelle_video.audit import AuditRepository
 from pixelle_video.budget import BudgetRepository, BudgetService
 from pixelle_video.config.manager import ConfigManager
@@ -68,6 +72,7 @@ _qc_service: QCApplicationService | None = None
 _experiment_service: ExperimentApplicationService | None = None
 _knowledge_service: KnowledgeApplicationService | None = None
 _product_service: ProductApplicationService | None = None
+_anime_service: AnimeApplicationService | None = None
 _video_service: VideoApplicationService | None = None
 
 
@@ -257,7 +262,7 @@ async def get_qc_service() -> QCApplicationService:
 async def shutdown_media_jobs() -> None:
     global _management_service, _media_assets_service, _media_jobs_database
     global _media_jobs_service, _audit_repository, _budget_service, _prompt_service, _qc_service
-    global _experiment_service, _knowledge_service, _product_service, _video_service
+    global _experiment_service, _knowledge_service, _product_service, _video_service, _anime_service
     if _media_jobs_database is not None:
         await _media_jobs_database.dispose()
     _media_jobs_database = None
@@ -272,6 +277,7 @@ async def shutdown_media_jobs() -> None:
     _knowledge_service = None
     _product_service = None
     _video_service = None
+    _anime_service = None
 
 
 async def get_experiment_service() -> ExperimentApplicationService:
@@ -416,6 +422,30 @@ async def _video_bgm_matcher(emotion: str) -> str | None:
     return BGML.get(emotion)
 
 
+async def get_anime_service() -> AnimeApplicationService:
+    """Lazily build the phase 07 anime pipeline on shared repositories."""
+
+    global _anime_service, _media_jobs_database
+    if _anime_service is None:
+        manager = ConfigManager()
+        config = manager.config.media_jobs
+        if _media_jobs_database is None:
+            _media_jobs_database = MediaJobsDatabase(config)
+        sessions = _media_jobs_database.connect()
+        anime_repository = AnimeRepository(sessions)
+        job_repository = MediaJobRepository(sessions)
+        _anime_service = AnimeApplicationService(
+            anime_repository,
+            job_repository=job_repository,
+            prompt_compiler=compile,
+            shot_engine=ShotProductionEngine(
+                anime_repository, job_repository, prompt_compiler=compile
+            ),
+            consistency_guard=ConsistencyGuard(anime_repository),
+        )
+    return _anime_service
+
+
 # Type alias for dependency injection
 PixelleVideoDep = Annotated[PixelleVideoCore, Depends(get_pixelle_video)]
 MediaJobServiceDep = Annotated[MediaJobApplicationService, Depends(get_media_job_service)]
@@ -429,3 +459,4 @@ ExperimentServiceDep = Annotated[ExperimentApplicationService, Depends(get_exper
 KnowledgeServiceDep = Annotated[KnowledgeApplicationService, Depends(get_knowledge_service)]
 ProductServiceDep = Annotated[ProductApplicationService, Depends(get_product_service)]
 VideoServiceDep = Annotated[VideoApplicationService, Depends(get_video_service)]
+AnimeServiceDep = Annotated[AnimeApplicationService, Depends(get_anime_service)]

@@ -58,6 +58,7 @@ from api.routers import (
     management_router,
     media_assets_router,
     media_jobs_router,
+    anime_router,
     products_router,
     prompts_router,
     qc_router,
@@ -155,6 +156,7 @@ app.include_router(prompts_router, prefix=api_config.api_prefix)
 app.include_router(qc_router, prefix=api_config.api_prefix)
 app.include_router(experiments_router, prefix=api_config.api_prefix)
 app.include_router(knowledge_router, prefix=api_config.api_prefix)
+app.include_router(anime_router, prefix=api_config.api_prefix)
 app.include_router(products_router, prefix=api_config.api_prefix)
 app.include_router(videos_router, prefix=api_config.api_prefix)
 
