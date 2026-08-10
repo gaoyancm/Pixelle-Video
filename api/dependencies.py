@@ -329,13 +329,14 @@ async def get_product_service() -> ProductApplicationService:
             management_repository,
             job_repository,
         )
-        packager = DeliveryPackager(
-            brief_repository,
-            exports_root="exports",
-        )
         qc_executor = QCExecutor(
             QCRepository(sessions),
             job_lookup=job_repository.get_job,
+        )
+        packager = DeliveryPackager(
+            brief_repository,
+            exports_root="exports",
+            qc_runner=qc_executor.run_qc,
         )
         _product_service = ProductApplicationService(
             brief_repository,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -208,3 +209,43 @@ async def test_package_resolves_brief_qc_job_and_populates_metadata(env) -> None
     assert metadata["qc"] is not None
     assert metadata["qc"]["decision"] == "pass"
     assert metadata["qc"]["job_id"] is not None
+
+
+async def test_get_product_service_wires_qc_into_packager(tmp_path, monkeypatch) -> None:
+    """D2: the production dependency wiring injects a real QC runner into
+    the delivery packager (not only the application service)."""
+    import api.dependencies as deps
+    from pixelle_video.config.schema import MediaJobsConfig
+
+    url = f"sqlite+aiosqlite:///{(tmp_path / 'di.db').as_posix()}"
+    fake_manager = SimpleNamespace(
+        config=SimpleNamespace(media_jobs=MediaJobsConfig(enabled=True, database_url=url))
+    )
+    monkeypatch.setattr("api.dependencies.ConfigManager", lambda: fake_manager)
+    # Reset the global caches so the provider rebuilds from the fake config.
+    monkeypatch.setattr(deps, "_product_service", None)
+    monkeypatch.setattr(deps, "_media_jobs_database", None)
+    service = await get_product_service()
+    assert service.delivery_packager.qc_runner is not None
+    assert service.prompt_compiler is not None
+
+
+async def test_real_qc_executor_populates_metadata_json(env) -> None:
+    """D2: a real 04-B QCExecutor wired as the packager runner writes a
+    JSON-serializable, non-null qc block into metadata.json."""
+    from pixelle_video.qc.executor import QCExecutor
+    from pixelle_video.qc.repository import QCRepository
+
+    _factory, repository, job_repository, _management, service, exports_root = env
+    # Seed a default QC profile like the 04-B production migration does.
+    qc_repository = QCRepository(_factory)
+    await qc_repository.create_profile(name="交付质检", rules_json=[], is_default=1)
+    brief_id = await _brief(repository)
+    qc_executor = QCExecutor(qc_repository, job_lookup=job_repository.get_job)
+    service.delivery_packager.qc_runner = qc_executor.run_qc
+    await service.ad_engine.start_production(brief_id, executor_kind_override="mock_executor")
+    payload = await service.package(brief_id, ["tiktok"])
+    metadata = payload["platforms"]["tiktok"]["metadata"]
+    assert metadata["qc"] is not None
+    assert "total_rules" in metadata["qc"]
+    assert "job_id" in metadata["qc"]

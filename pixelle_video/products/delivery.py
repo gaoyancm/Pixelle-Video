@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import zipfile
 from datetime import date
@@ -55,7 +56,7 @@ class DeliveryPackager:
             platform_dir.mkdir(parents=True, exist_ok=True)
             files = self._collect_outputs(platform)
             self._write_captions(platform_dir, brief, platform)
-            metadata = self._build_metadata(brief, platform, files, include_qc)
+            metadata = await self._build_metadata(brief, platform, files, include_qc)
             self._write_metadata(platform_dir, metadata)
             packaged[platform] = {
                 "directory": str(platform_dir),
@@ -92,7 +93,7 @@ class DeliveryPackager:
             "hashtags": [f"#{product}", "#广告", f"#{platform}", "#好物推荐"],
         }
 
-    def _build_metadata(
+    async def _build_metadata(
         self, brief, platform: str, files: Sequence[Path], include_qc: bool
     ) -> dict[str, Any]:
         metadata: dict[str, Any] = {
@@ -112,7 +113,12 @@ class DeliveryPackager:
         }
         if include_qc and self.qc_runner is not None and self.qc_job_id:
             try:
-                metadata["qc"] = self.qc_runner(self.qc_job_id)
+                result = self.qc_runner(self.qc_job_id)
+                if inspect.isawaitable(result):
+                    result = await result
+                if hasattr(result, "to_payload"):
+                    result = result.to_payload()
+                metadata["qc"] = result
             except Exception:
                 metadata["qc"] = None
         return metadata
