@@ -26,6 +26,7 @@ from api.services.experiments import ExperimentApplicationService
 from api.services.knowledge import KnowledgeApplicationService
 from api.services.management import ManagementApplicationService
 from api.services.media_jobs import MediaJobApplicationService
+from api.services.products import ProductApplicationService
 from api.services.prompts import PromptApplicationService
 from api.services.qc import QCApplicationService
 from pixelle_video.audit import AuditRepository
@@ -36,6 +37,10 @@ from pixelle_video.knowledge.repository import KnowledgeRepository
 from pixelle_video.management import ManagementRepository
 from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
 from pixelle_video.media_jobs import MediaJobRepository, MediaJobsDatabase
+from pixelle_video.products.ad_engine import AdProductionEngine
+from pixelle_video.products.delivery import DeliveryPackager
+from pixelle_video.products.platform_adapter import PlatformAdapter
+from pixelle_video.products.repository import ProductBriefRepository
 from pixelle_video.prompts.repository import PromptRepository
 from pixelle_video.qc.executor import QCExecutor
 from pixelle_video.qc.repository import QCRepository
@@ -54,6 +59,7 @@ _prompt_service: PromptApplicationService | None = None
 _qc_service: QCApplicationService | None = None
 _experiment_service: ExperimentApplicationService | None = None
 _knowledge_service: KnowledgeApplicationService | None = None
+_product_service: ProductApplicationService | None = None
 
 
 async def get_pixelle_video() -> PixelleVideoCore:
@@ -242,7 +248,7 @@ async def get_qc_service() -> QCApplicationService:
 async def shutdown_media_jobs() -> None:
     global _management_service, _media_assets_service, _media_jobs_database
     global _media_jobs_service, _audit_repository, _budget_service, _prompt_service, _qc_service
-    global _experiment_service, _knowledge_service
+    global _experiment_service, _knowledge_service, _product_service
     if _media_jobs_database is not None:
         await _media_jobs_database.dispose()
     _media_jobs_database = None
@@ -255,6 +261,7 @@ async def shutdown_media_jobs() -> None:
     _qc_service = None
     _experiment_service = None
     _knowledge_service = None
+    _product_service = None
 
 
 async def get_experiment_service() -> ExperimentApplicationService:
@@ -302,6 +309,40 @@ async def get_knowledge_service() -> KnowledgeApplicationService:
     return _knowledge_service
 
 
+async def get_product_service() -> ProductApplicationService:
+    """Lazily build the phase 05 product pipeline on shared repositories."""
+
+    global _product_service, _media_jobs_database
+    if _product_service is None:
+        manager = ConfigManager()
+        config = manager.config.media_jobs
+        if _media_jobs_database is None:
+            _media_jobs_database = MediaJobsDatabase(config)
+        sessions = _media_jobs_database.connect()
+        job_repository = MediaJobRepository(sessions)
+        management_repository = ManagementRepository(sessions)
+        brief_repository = ProductBriefRepository(sessions)
+        asset_repository = AssetRepository(sessions)
+        ad_engine = AdProductionEngine(
+            brief_repository,
+            management_repository,
+            job_repository,
+        )
+        packager = DeliveryPackager(
+            brief_repository,
+            exports_root="exports",
+        )
+        _product_service = ProductApplicationService(
+            brief_repository,
+            ad_engine=ad_engine,
+            asset_repository=asset_repository,
+            job_repository=job_repository,
+            platform_adapter=PlatformAdapter(),
+            delivery_packager=packager,
+        )
+    return _product_service
+
+
 # Type alias for dependency injection
 PixelleVideoDep = Annotated[PixelleVideoCore, Depends(get_pixelle_video)]
 MediaJobServiceDep = Annotated[MediaJobApplicationService, Depends(get_media_job_service)]
@@ -313,3 +354,4 @@ PromptServiceDep = Annotated[PromptApplicationService, Depends(get_prompt_servic
 QCServiceDep = Annotated[QCApplicationService, Depends(get_qc_service)]
 ExperimentServiceDep = Annotated[ExperimentApplicationService, Depends(get_experiment_service)]
 KnowledgeServiceDep = Annotated[KnowledgeApplicationService, Depends(get_knowledge_service)]
+ProductServiceDep = Annotated[ProductApplicationService, Depends(get_product_service)]

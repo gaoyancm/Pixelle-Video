@@ -951,7 +951,8 @@ def test_openapi_has_exactly_twenty_authorized_phase3_management_operations():
     # 03-F adds five audit/budget operations, 04-A adds fifteen prompt
     # operations, 04-B adds nine QC operations, 04-C adds nine experiment
     # operations, and 04-D adds ten knowledge operations on top of the
-    # twenty phase 03 ones.
+    # twenty phase 03 ones. (Phase 05 product routes live under /api/products,
+    # outside this /api/admin guard.)
     assert sum(len(methods) for methods in paths.values()) == 68
     serialized = str(paths).lower()
     for forbidden in ("node_id", "provider", "prompt_id", "submission_token", "base_url"):
