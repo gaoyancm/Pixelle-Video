@@ -136,3 +136,90 @@ async def test_api_package_and_download(api_client) -> None:
     downloaded = await client.get(f"/api/videos/scripts/{script_id}/download")
     assert downloaded.status_code == 200
     assert downloaded.headers["content-type"] == "application/zip"
+
+
+async def test_package_adapts_composed_video_per_platform(env, tmp_path: Path) -> None:
+    """D2: packaging transcodes the composed video into the platform spec
+    (size + duration) and the zip contains the .mp4 files."""
+    import shutil
+    import subprocess
+
+    from pixelle_video.videos.compose import Composer
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    _factory, repository, service, exports_root = env
+    script_id = await _make_script(repository)
+
+    # Compose a small real video (placeholder frames via ffmpeg).
+    async def fake_tts(text: str) -> str:
+        audio = tmp_path / "voice.mp3"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=24000:cl=mono:d=3",
+                "-c:a",
+                "libmp3lame",
+                str(audio),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return str(audio)
+
+    composer = Composer(repository, tts_runner=fake_tts, work_dir=str(tmp_path / "work"))
+    service.composer = composer  # wire so package() resolves the composed video
+    compose_payload = await composer.compose(script_id)
+    assert Path(compose_payload["video"]).exists()
+
+    # Package with the composed video path.
+    await service.package(script_id, ["tiktok", "youtube_shorts"])
+    for platform, spec in (
+        ("tiktok", VIDEO_PLATFORM_SPECS["tiktok"]),
+        ("youtube_shorts", VIDEO_PLATFORM_SPECS["youtube_shorts"]),
+    ):
+        platform_dir = exports_root / "project-x" / script_id / "video_delivery" / platform
+        mp4s = list(platform_dir.glob("*.mp4"))
+        assert len(mp4s) == 1, f"platform {platform} missing adapted mp4"
+        width, height, duration = _probe(mp4s[0])
+        assert (width, height) == tuple(spec["size"])
+        assert duration <= spec["max_seconds"] + 0.5 if spec["max_seconds"] else True
+
+    # Zip contains the mp4 files.
+    zip_path = service.download_zip(script_id, "project-x")
+    assert zip_path is not None
+    import zipfile
+
+    with zipfile.ZipFile(zip_path) as archive:
+        names = archive.namelist()
+        assert any("tiktok/" in name and name.endswith(".mp4") for name in names)
+        assert any("youtube_shorts/" in name and name.endswith(".mp4") for name in names)
+
+
+def _probe(path: Path) -> tuple[int, int, float]:
+    import json
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height:format=duration",
+            "-of",
+            "json",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    data = json.loads(result.stdout)
+    stream = data["streams"][0]
+    return int(stream["width"]), int(stream["height"]), float(data["format"]["duration"])

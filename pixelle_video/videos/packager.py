@@ -42,14 +42,18 @@ class VideoPackager:
         script_repository: VideoScriptRepository,
         *,
         exports_root: str | None = None,
+        ffmpeg: str = "ffmpeg",
     ):
         self.script_repository = script_repository
         self.exports_root = Path(exports_root) if exports_root else Path(".") / "exports"
+        self.ffmpeg = ffmpeg
 
     async def package(
         self,
         script_id: str,
         platforms: Sequence[str],
+        *,
+        video_path: str | None = None,
     ) -> dict[str, Any]:
         script = await self._require(script_id)
         languages = self._languages_for(script.language)
@@ -66,12 +70,17 @@ class VideoPackager:
             self._write_titles(platform_dir, script, platform, languages)
             self._write_description(platform_dir, script, platform)
             self._write_cover_placeholder(platform_dir, script, platform, spec)
+            files: list[str] = sorted(path.name for path in platform_dir.iterdir())
+            if video_path:
+                adapted = self._adapt_video(video_path, platform, spec, platform_dir)
+                if adapted is not None:
+                    files.append(Path(adapted).name)
             packaged[platform] = {
                 "directory": str(platform_dir),
                 "size": list(spec["size"]),
                 "max_seconds": spec["max_seconds"],
                 "languages": languages,
-                "files": sorted(path.name for path in platform_dir.iterdir()),
+                "files": files,
             }
         return {
             "script_id": script_id,
@@ -158,3 +167,47 @@ class VideoPackager:
 
             raise VideoScriptNotFoundError("video script not found")
         return script
+
+    def _adapt_video(
+        self,
+        source_path: str,
+        platform: str,
+        spec: dict[str, Any],
+        platform_dir: Path,
+    ) -> str | None:
+        """Transcode/crop the composed video to the platform spec via ffmpeg."""
+        import subprocess
+
+        source = Path(source_path)
+        if not source.exists():
+            return None
+        size = spec["size"]
+        max_seconds = spec.get("max_seconds")
+        output = platform_dir / f"{platform}_{size[0]}x{size[1]}.mp4"
+        command = [
+            self.ffmpeg,
+            "-y",
+            "-i",
+            str(source),
+            "-vf",
+            (
+                f"scale={size[0]}:{size[1]}:force_original_aspect_ratio=decrease,"
+                f"pad={size[0]}:{size[1]}:(ow-iw)/2:(oh-ih)/2"
+            ),
+        ]
+        if max_seconds:
+            command += ["-t", str(max_seconds)]
+        command += [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-an",
+            str(output),
+        ]
+        completed = subprocess.run(command, capture_output=True)
+        if completed.returncode != 0:
+            return None
+        return str(output)

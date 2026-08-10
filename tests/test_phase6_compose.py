@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import pixelle_video.management.models as _management_models  # noqa: F401
+from api.dependencies import get_video_service
 from pixelle_video.media_jobs.models import Base
 from pixelle_video.videos.compose import (
     Composer,
@@ -183,3 +185,79 @@ def _ffprobe_duration(path: Path) -> float | None:
     if result.returncode != 0:
         return None
     return float(json.loads(result.stdout)["format"]["duration"])
+
+
+async def test_composer_uses_real_frame_assets_via_resolver(env, tmp_path: Path) -> None:
+    """D1: frame assets resolve from real files through the asset resolver
+    (no dead _asset_paths attribute)."""
+    _factory, repository = env
+    script_id = await _make_script(repository, tmp_path)
+    real_frame = tmp_path / "real_frame.mp4"
+    _ffmpeg(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=red:s=320x240:d=2:r=10",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(real_frame),
+        ]
+    )
+
+    async def fake_asset_resolver(job_id: str) -> str:
+        assert job_id  # real job id is passed through
+        return str(real_frame)
+
+    async def fake_tts(text: str) -> str:
+        audio = tmp_path / "voice2.mp3"
+        _ffmpeg(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=24000:cl=mono:d=2",
+                "-c:a",
+                "libmp3lame",
+                str(audio),
+            ]
+        )
+        return str(audio)
+
+    composer = Composer(
+        repository,
+        tts_runner=fake_tts,
+        bgm_matcher=None,
+        asset_resolver=fake_asset_resolver,
+        work_dir=str(tmp_path / "work-resolver"),
+    )
+    payload = await composer.compose(script_id)
+    assert Path(payload["video"]).exists()
+
+
+async def test_get_video_service_wires_tts_into_composer(tmp_path, monkeypatch) -> None:
+    """D1: the production dependency wiring injects a TTS runner into the
+    composer (factory-level assertion)."""
+    import api.dependencies as deps
+    from pixelle_video.config.schema import MediaJobsConfig
+
+    url = f"sqlite+aiosqlite:///{(tmp_path / 'di-video.db').as_posix()}"
+    fake_manager = SimpleNamespace(
+        config=SimpleNamespace(
+            media_jobs=MediaJobsConfig(enabled=True, database_url=url),
+            to_dict=lambda: {"comfyui": {}},
+        )
+    )
+    monkeypatch.setattr("api.dependencies.ConfigManager", lambda: fake_manager)
+    monkeypatch.setattr(deps, "_video_service", None)
+    monkeypatch.setattr(deps, "_media_jobs_database", None)
+    service = await get_video_service()
+    assert service.composer.tts_runner is not None
+    assert service.composer.bgm_matcher is not None
+    assert service.composer.asset_resolver is not None

@@ -104,7 +104,8 @@ class VideoApplicationService:
 
     async def package(self, script_id: str, platforms: list[str]) -> dict[str, Any]:
         packager = self.packager or VideoPackager(self.repository)
-        return await packager.package(script_id, platforms)
+        video_path = self.result_path(script_id)
+        return await packager.package(script_id, platforms, video_path=video_path)
 
     def download_zip(self, script_id: str, project_id: str | None) -> str | None:
         packager = self.packager or VideoPackager(self.repository)

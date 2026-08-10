@@ -74,12 +74,14 @@ class Composer:
         *,
         tts_runner: Callable[[str], Awaitable[str]] | None = None,
         bgm_matcher: Callable[[str], Awaitable[str]] | None = None,
+        asset_resolver: Callable[[str], Awaitable[str | None]] | None = None,
         ffmpeg: str = "ffmpeg",
         work_dir: str | None = None,
     ):
         self.script_repository = script_repository
         self.tts_runner = tts_runner
         self.bgm_matcher = bgm_matcher
+        self.asset_resolver = asset_resolver
         self.ffmpeg = ffmpeg
         self.work_dir = Path(work_dir) if work_dir else Path(".") / ".video-work"
 

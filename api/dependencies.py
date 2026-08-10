@@ -48,6 +48,7 @@ from pixelle_video.qc.executor import QCExecutor
 from pixelle_video.qc.repository import QCRepository
 from pixelle_video.service import PixelleVideoCore
 from pixelle_video.services.comfyui_adapter import select_comfyui_node
+from pixelle_video.services.tts_service import TTSService
 from pixelle_video.videos.compose import Composer
 from pixelle_video.videos.packager import VideoPackager
 from pixelle_video.videos.repository import VideoScriptRepository
@@ -371,16 +372,46 @@ async def get_video_service() -> VideoApplicationService:
         sessions = _media_jobs_database.connect()
         script_repository = VideoScriptRepository(sessions)
         job_repository = MediaJobRepository(sessions)
+        asset_repository = AssetRepository(sessions)
+        # TTS runner: the repository's workflow-based TTS service (injected,
+        # not invoked during wiring).
+        tts_runner = None
+        try:
+            tts_service = TTSService(manager.config.to_dict())
+            tts_runner = tts_service.__call__
+        except Exception:
+            logger.warning("TTS service unavailable for video pipeline")
+        bgm_matcher = _video_bgm_matcher
+
+        async def resolve_frame_asset(job_id: str) -> str | None:
+            rows = await asset_repository.output_assets_for_job(job_id)
+            if not rows:
+                return None
+            asset = rows[0][1]
+            return getattr(asset, "file_path", None) or getattr(asset, "path", None)
+
+        composer = Composer(
+            script_repository,
+            tts_runner=tts_runner,
+            bgm_matcher=bgm_matcher,
+            asset_resolver=resolve_frame_asset,
+        )
         _video_service = VideoApplicationService(
             script_repository,
             script_engine=ScriptEngine(script_repository, prompt_compiler=compile),
             storyboard_engine=StoryboardEngine(script_repository, job_repository),
-            composer=Composer(script_repository),
+            composer=composer,
             packager=VideoPackager(script_repository, exports_root="exports"),
             job_repository=job_repository,
             prompt_compiler=compile,
         )
     return _video_service
+
+
+def _video_bgm_matcher(emotion: str) -> str | None:
+    """Deterministic emotion -> BGM mapping (reserved injection point)."""
+    mapping = {"激昂": "bgm_energetic", "舒缓": "bgm_calm", "科技感": "bgm_tech"}
+    return mapping.get(emotion)
 
 
 # Type alias for dependency injection
