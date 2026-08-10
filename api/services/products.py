@@ -12,7 +12,10 @@ from pixelle_video.products.delivery import DeliveryPackager
 from pixelle_video.products.platform_adapter import PlatformAdapter
 from pixelle_video.products.repository import ProductBriefRepository
 
-_HOOK_TEMPLATE = "【{product}】{points}｜{audience} 看过来，第一眼就心动"
+_HOOK_TEMPLATE = (
+    "为产品「{{product}}」编写一条短视频/广告开场 Hook。"
+    "核心卖点：{{points}}；目标受众：{{audience}}"
+)
 
 
 class ProductApplicationService:
@@ -83,17 +86,18 @@ class ProductApplicationService:
         styles = ["悬念型", "利益型", "场景型"]
         ideas: list[dict[str, str]] = []
         for index, style in enumerate(styles, start=1):
-            base = _HOOK_TEMPLATE.format(
-                product=brief.product_name, points=points, audience=audience
-            )
             if self.prompt_compiler is not None:
                 base = self.prompt_compiler(
-                    base,
+                    _HOOK_TEMPLATE,
                     {
                         "product": brief.product_name,
                         "points": points,
                         "audience": audience,
                     },
+                )
+            else:
+                base = _HOOK_TEMPLATE.format(
+                    product=brief.product_name, points=points, audience=audience
                 )
             ideas.append(
                 {
@@ -209,9 +213,26 @@ class ProductApplicationService:
     async def package(self, brief_id: str, platforms: list[str]) -> dict[str, Any]:
         if self.delivery_packager is None:
             raise RuntimeError("delivery packager not configured")
+        # Resolve the brief's production jobs and pick the representative
+        # QC target (the main image job, else the first job).
+        qc_job_id = await self._resolve_qc_job(brief_id)
+        if qc_job_id is not None:
+            self.delivery_packager.qc_job_id = qc_job_id
         payload = await self.delivery_packager.package(brief_id, platforms)
         await self.repository.update_status(brief_id, "completed")
         return payload
+
+    async def _resolve_qc_job(self, brief_id: str) -> str | None:
+        job_ids = await self._brief_job_ids(brief_id)
+        if not job_ids:
+            return None
+        # Prefer the main image job (the brief's representative asset).
+        for job_id in job_ids:
+            job = await self.job_repository.get_job(job_id) if self.job_repository else None
+            role = ((getattr(job, "input_json", {}) or {}).get("role", "") if job else "") or ""
+            if role == "main_image":
+                return job_id
+        return job_ids[0]
 
     async def package_status(self, brief_id: str) -> dict[str, Any]:
         brief = await self._require(brief_id)

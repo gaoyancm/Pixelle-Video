@@ -161,3 +161,31 @@ async def test_api_not_found(api_client) -> None:
     client, _factory, _repository, _jobs, _management, _service = api_client
     response = await client.get("/api/products/briefs/missing")
     assert response.status_code == 404
+
+
+async def test_generate_ideas_uses_injected_04a_compiler(env) -> None:
+    """D1: generate-ideas must compile through the injected 04-A compiler."""
+    from pixelle_video.prompts.compiler import compile as prompt_compile
+
+    _factory, repository, _jobs, _management, _service = env
+    _service.prompt_compiler = prompt_compile
+    brief = await repository.create_brief(**_brief_body())
+    payload = await _service.generate_ideas(brief.id)
+    for idea in payload["ideas"]:
+        # The double-brace placeholders must have been replaced by compile().
+        assert "{{product}}" not in idea["hook"]
+        assert "{{points}}" not in idea["hook"]
+        assert "手工皮具钱包" in idea["hook"]
+
+
+async def test_api_generate_ideas_with_compiler_injection(api_client) -> None:
+    """D1: API path honours the injected 04-A compiler (no braces leak)."""
+    from pixelle_video.prompts.compiler import compile as prompt_compile
+
+    client, _factory, repository, _jobs, _management, service = api_client
+    service.prompt_compiler = prompt_compile
+    brief = await repository.create_brief(**_brief_body())
+    response = await client.post(f"/api/products/briefs/{brief.id}/generate-ideas")
+    assert response.status_code == 200
+    for idea in response.json()["ideas"]:
+        assert "{{" not in idea["hook"]

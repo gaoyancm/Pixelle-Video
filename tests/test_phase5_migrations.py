@@ -12,8 +12,8 @@ from sqlalchemy import create_engine, inspect
 from pixelle_video.media_jobs.database import sqlite_url_for_path
 
 PROJECT_ROOT = Path(__file__).parents[1]
-PREVIOUS_REVISION = "0010_seed_knowledge"
-HEAD_REVISION = "0011_add_product_briefs"
+PREVIOUS_REVISION = "0011_add_product_briefs"
+HEAD_REVISION = "0012_seed_ad_prompt"
 
 
 def config(path: Path) -> Config:
@@ -67,7 +67,7 @@ def test_downgrade_removes_product_briefs(tmp_path: Path) -> None:
     path = tmp_path / "round-trip.db"
     value = config(path)
     command.upgrade(value, "head")
-    command.downgrade(value, PREVIOUS_REVISION)
+    command.downgrade(value, "0010_seed_knowledge")
     engine = create_engine(sync_url(path))
     try:
         assert "product_briefs" not in inspect(engine).get_table_names()

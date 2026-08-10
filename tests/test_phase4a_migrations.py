@@ -12,8 +12,8 @@ from sqlalchemy import create_engine, inspect, text
 from pixelle_video.media_jobs.database import sqlite_url_for_path
 
 PROJECT_ROOT = Path(__file__).parents[1]
-PREVIOUS_REVISION = "0010_seed_knowledge"
-HEAD_REVISION = "0011_add_product_briefs"
+PREVIOUS_REVISION = "0011_add_product_briefs"
+HEAD_REVISION = "0012_seed_ad_prompt"
 NEW_TABLES = {
     "prompt_templates",
     "prompt_versions",
@@ -99,9 +99,9 @@ def test_upgrade_seeds_seven_templates_and_twenty_one_tags(tmp_path: Path) -> No
                 text("SELECT COUNT(*) FROM prompt_template_tags")
             ).scalar_one()
             names = set(connection.execute(text("SELECT name FROM prompt_templates")).scalars())
-        assert template_count == 7
+        assert template_count == 8  # 7 seeded in 04-A + pt-ad-hook (phase 05)
         assert tag_count >= 20
-        assert version_count == 7
+        assert version_count == 8
         assert relation_count >= 1
         assert {
             "视频标题生成",
@@ -111,6 +111,7 @@ def test_upgrade_seeds_seven_templates_and_twenty_one_tags(tmp_path: Path) -> No
             "图片提示词生成",
             "风格转换提示词",
             "素材脚本生成",
+            "产品广告Hook模板",
         } <= names
     finally:
         engine.dispose()
@@ -125,7 +126,7 @@ def test_seeded_templates_have_version_one_snapshot(tmp_path: Path) -> None:
             versions = connection.execute(
                 text("SELECT template_id, version_no FROM prompt_versions ORDER BY template_id")
             ).fetchall()
-        assert len(versions) == 7
+        assert len(versions) == 8  # 7 seeded in 04-A + pt-ad-hook (phase 05)
         assert all(version_no == 1 for _template_id, version_no in versions)
     finally:
         engine.dispose()

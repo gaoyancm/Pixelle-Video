@@ -41,6 +41,7 @@ from pixelle_video.products.ad_engine import AdProductionEngine
 from pixelle_video.products.delivery import DeliveryPackager
 from pixelle_video.products.platform_adapter import PlatformAdapter
 from pixelle_video.products.repository import ProductBriefRepository
+from pixelle_video.prompts.compiler import compile
 from pixelle_video.prompts.repository import PromptRepository
 from pixelle_video.qc.executor import QCExecutor
 from pixelle_video.qc.repository import QCRepository
@@ -332,6 +333,10 @@ async def get_product_service() -> ProductApplicationService:
             brief_repository,
             exports_root="exports",
         )
+        qc_executor = QCExecutor(
+            QCRepository(sessions),
+            job_lookup=job_repository.get_job,
+        )
         _product_service = ProductApplicationService(
             brief_repository,
             ad_engine=ad_engine,
@@ -339,6 +344,8 @@ async def get_product_service() -> ProductApplicationService:
             job_repository=job_repository,
             platform_adapter=PlatformAdapter(),
             delivery_packager=packager,
+            prompt_compiler=compile,
+            qc_runner=qc_executor.run_qc,
         )
     return _product_service
 

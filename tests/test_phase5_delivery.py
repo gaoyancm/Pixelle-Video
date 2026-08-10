@@ -188,3 +188,23 @@ async def test_api_package_and_status(api_client) -> None:
     status = await client.get(f"/api/products/briefs/{brief_id}/package/status")
     assert status.status_code == 200
     assert status.json()["packaged"] is True
+
+
+async def test_package_resolves_brief_qc_job_and_populates_metadata(env) -> None:
+    """D2: in production wiring the package flow resolves the brief's QC
+    job and writes a non-null qc block into metadata.json."""
+    _factory, repository, job_repository, management_repository, service, exports_root = env
+    brief_id = await _brief(repository)
+
+    def fake_qc(job_id: str):
+        return {"decision": "pass", "job_id": job_id}
+
+    # Wire the packager's QC runner (as the production dependency does).
+    service.delivery_packager.qc_runner = fake_qc
+    # Start production so the brief has jobs to resolve for QC.
+    await service.ad_engine.start_production(brief_id, executor_kind_override="mock_executor")
+    payload = await service.package(brief_id, ["tiktok"])
+    metadata = payload["platforms"]["tiktok"]["metadata"]
+    assert metadata["qc"] is not None
+    assert metadata["qc"]["decision"] == "pass"
+    assert metadata["qc"]["job_id"] is not None
