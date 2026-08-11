@@ -45,8 +45,10 @@ from pixelle_video.media_assets import AssetRepository, AssetService, LocalAsset
 from pixelle_video.media_jobs import MediaJobRepository, MediaJobsDatabase
 from pixelle_video.orchestration.agents.decision_agent import DecisionAgent
 from pixelle_video.orchestration.agents.sub_agents import (
+    ConsistencyVerifier,
     ContentStrategist,
     Copywriter,
+    EpisodePlanner,
     StoryboardPlanner,
     Supervisor,
 )
@@ -477,6 +479,14 @@ async def get_anime_service() -> AnimeApplicationService:
         sessions = _media_jobs_database.connect()
         anime_repository = AnimeRepository(sessions)
         job_repository = MediaJobRepository(sessions)
+        plan_repository = ContentPlanRepository(sessions)
+        storyboard_planner_anime = None
+        try:
+            from pixelle_video.orchestration.agents.sub_agents import StoryboardPlanner
+
+            storyboard_planner_anime = StoryboardPlanner(_mock_llm_caller, prompt_compiler=compile)
+        except Exception:
+            logger.warning("storyboard planner unavailable for anime pipeline")
         _anime_service = AnimeApplicationService(
             anime_repository,
             job_repository=job_repository,
@@ -485,12 +495,23 @@ async def get_anime_service() -> AnimeApplicationService:
                 anime_repository, job_repository, prompt_compiler=compile
             ),
             consistency_guard=ConsistencyGuard(anime_repository),
+            storyboard_planner=storyboard_planner_anime,
+            plan_repository=plan_repository,
+            consistency_verifier=ConsistencyVerifier(_mock_llm_caller, prompt_compiler=compile),
         )
     return _anime_service
 
 
 async def _mock_llm_caller(text: str) -> str:
     """Deterministic mock LLM: returns valid JSON for the requested tool."""
+    if "storyboard_planner" in text and "规划多集结构" in text:
+        return (
+            '{"seasons": [{"season_no": 1, "episodes": [{"episode_no": 1, "title": "第一集",'
+            ' "hook": "悬念开场", "arc": "相识"}]}],'
+            ' "character_arcs": [{"character_id": "c1", "season_arc": "从狂妄到谦卑",'
+            ' "key_episodes": [3, 5, 8]}],'
+            ' "foreshadowing_map": [{"setup": "发现钥匙", "payoff": "打开密室"}]}'
+        )
     if "storyboard_planner" in text:
         return (
             '{"scenes": [{"index": 1, "desc": "开场"}, {"index": 2, "desc": "主体"}],'
@@ -556,6 +577,7 @@ async def get_orchestration_service() -> OrchestrationService:
             decision_agent=decision_agent,
             pipeline=pipeline,
             llm_caller=_mock_llm_caller,
+            episode_planner=EpisodePlanner(_mock_llm_caller, prompt_compiler=compile),
         )
     return _orchestration_service
 

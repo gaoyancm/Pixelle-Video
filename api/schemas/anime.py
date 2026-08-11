@@ -100,6 +100,7 @@ class ShotCreate(StrictModel):
 
 class ShotPlanResponse(StrictModel):
     shots: list[dict[str, Any]]
+    source: str | None = None  # "04-e-storyboard-planner" when routed via the 04-E agent
 
 
 class ShotGenerateResponse(StrictModel):

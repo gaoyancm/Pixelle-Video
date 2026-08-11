@@ -272,6 +272,16 @@ class AnimeRepository:
         async with self._session_factory() as session:
             return await session.get(Shot, shot_id)
 
+    async def list_shots_for_character(self, character_id: str) -> list[Shot]:
+        """All shots whose character_states mention the character id."""
+        statement = (
+            select(Shot)
+            .where(Shot.character_states_json.like(f'%"{character_id}"%'))
+            .order_by(Shot.shot_no)
+        )
+        async with self._session_factory() as session:
+            return list((await session.execute(statement)).scalars())
+
     async def list_shots(self, scene_id: str) -> list[Shot]:
         statement = select(Shot).where(Shot.scene_id == scene_id).order_by(Shot.shot_no)
         async with self._session_factory() as session:

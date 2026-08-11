@@ -227,6 +227,11 @@ async def character_consistency(character_id: str, service: AnimeServiceDep):
     return await service.character_report(character_id)
 
 
+@router.get("/characters/{character_id}/cross-episode-consistency/{season_no}")
+async def cross_episode_consistency(character_id: str, season_no: int, service: AnimeServiceDep):
+    return await service.cross_episode_consistency(character_id, season_no)
+
+
 @router.get("/episodes/{episode_id}/consistency-report")
 async def episode_consistency(episode_id: str, service: AnimeServiceDep):
     return await service.episode_report(episode_id)
