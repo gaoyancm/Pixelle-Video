@@ -523,6 +523,8 @@ async def _mock_llm_caller(text: str) -> str:
         return (
             '{"grade": "B", "severe_issues": 0, "medium_issues": 2, "suggestions": ["建议强化CTA"]}'
         )
+    if "consistency_verifier" in text:
+        return '{"consistent": true, "issues": []}'
     return (
         '{"target_audience": "25-45岁女性",'
         ' "creative_directions": [{"hook": "品质感", "angle": "奢华风", "cta": "购买"}],'
