@@ -96,6 +96,26 @@ async def confirm_script(script_id: str, service: VideoServiceDep):
     return await service.confirm(script_id)
 
 
+@router.post("/scripts/from-plan/{plan_id}", status_code=201)
+async def create_script_from_plan(plan_id: str, service: VideoServiceDep):
+    return await service.create_script_from_plan(plan_id)
+
+
+@router.get("/scripts/{script_id}/plan")
+async def get_plan_for_script(script_id: str, service: VideoServiceDep):
+    result = await service.get_plan_for_script(script_id)
+    if result is None:
+        from api.routers.videos import _error
+
+        return _error(404, "plan_link_missing", "No linked content plan for this script.")
+    return result
+
+
+@router.post("/scripts/{script_id}/confirm-from-plan", response_model=StoryboardResponse)
+async def confirm_from_plan(script_id: str, service: VideoServiceDep):
+    return await service.confirm_from_plan(script_id)
+
+
 @router.post("/scripts/{script_id}/storyboard", response_model=StoryboardResponse)
 async def build_storyboard(script_id: str, service: VideoServiceDep):
     return await service.build_storyboard(script_id)

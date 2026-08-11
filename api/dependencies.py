@@ -70,6 +70,7 @@ from pixelle_video.videos.compose import Composer
 from pixelle_video.videos.packager import VideoPackager
 from pixelle_video.videos.repository import VideoScriptRepository
 from pixelle_video.videos.script_engine import ScriptEngine
+from pixelle_video.videos.script_mapper import ScriptMapper
 from pixelle_video.videos.storyboard import StoryboardEngine
 
 # Global Pixelle-Video instance
@@ -434,6 +435,15 @@ async def get_video_service() -> VideoApplicationService:
             bgm_matcher=bgm_matcher,
             asset_resolver=resolve_frame_asset,
         )
+        storyboard_planner = None
+        try:
+            from pixelle_video.orchestration.agents.sub_agents import StoryboardPlanner
+
+            storyboard_planner = StoryboardPlanner(
+                _mock_llm_caller, prompt_compiler=compile
+            )
+        except Exception:
+            logger.warning("storyboard planner unavailable for video pipeline")
         _video_service = VideoApplicationService(
             script_repository,
             script_engine=ScriptEngine(script_repository, prompt_compiler=compile),
@@ -442,6 +452,9 @@ async def get_video_service() -> VideoApplicationService:
             packager=VideoPackager(script_repository, exports_root="exports"),
             job_repository=job_repository,
             prompt_compiler=compile,
+            storyboard_planner=storyboard_planner,
+            plan_repository=ContentPlanRepository(sessions),
+            script_mapper=ScriptMapper(),
         )
     return _video_service
 

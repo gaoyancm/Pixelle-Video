@@ -52,6 +52,8 @@ class ConfirmResponse(StrictModel):
 class StoryboardResponse(StrictModel):
     script_id: str
     frames: list[dict[str, Any]]
+    camera_notes: str | None = None
+    source: str | None = None  # "04-e-storyboard-planner" when routed via the 04-E agent
 
 
 class GenerateAssetsResponse(StrictModel):
