@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -145,3 +146,39 @@ async def test_api_plan_not_found(api_client) -> None:
     client, _factory, _repository, _service = api_client
     response = await client.get("/api/orchestration/plans/missing")
     assert response.status_code == 404
+
+
+async def test_production_di_generates_to_awaiting_approval(tmp_path, monkeypatch) -> None:
+    """D1 修复断言（真实生产 DI，不手工构造）：
+    get_orchestration_service() 工厂产物（含 04-A compile 注入）端到端生成，
+    状态为 awaiting_approval（非 stage_failed），approval_summary 非空。"""
+    import api.dependencies as deps
+    from pixelle_video.config.schema import MediaJobsConfig
+
+    url = f"sqlite+aiosqlite:///{(tmp_path / 'di-04e.db').as_posix()}"
+    fake_manager = SimpleNamespace(
+        config=SimpleNamespace(
+            media_jobs=MediaJobsConfig(enabled=True, database_url=url),
+            to_dict=lambda: {"comfyui": {}},
+        )
+    )
+    monkeypatch.setattr("api.dependencies.ConfigManager", lambda: fake_manager)
+    monkeypatch.setattr(deps, "_orchestration_service", None)
+    monkeypatch.setattr(deps, "_media_jobs_database", None)
+    engine = create_async_engine(url)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    await engine.dispose()
+
+    service = await get_orchestration_service()
+    from api.schemas.orchestration import PlanCreateRequest
+
+    plan = await service.create_plan(PlanCreateRequest(request_text="手工皮具钱包，Etsy主图"))
+    assert plan.intent == "product_ad"
+    result = await service.generate(plan.id)
+    assert result["status"] == "awaiting_approval"
+    assert result["status"] != "stage_failed"
+    summary = await service.approval_summary(plan.id)
+    assert summary is not None
+    assert summary["summary"]
+    assert summary["grade"] is not None

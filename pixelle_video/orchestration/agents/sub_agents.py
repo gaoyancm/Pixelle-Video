@@ -58,7 +58,7 @@ class SubAgent:
         self.prompt_compiler = prompt_compiler
 
     def _template(self) -> str:
-        return "{prompt}"
+        return "{{prompt}}"  # double braces: 04-A compile only matches {{var}}
 
     async def run(self, prompt: str) -> SubAgentResult:
         compiled = prompt

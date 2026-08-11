@@ -46,9 +46,7 @@ def upgrade() -> None:
             "intent IN ('product_ad', 'short_video', 'animation', 'unknown')",
             name="ck_content_plans_intent",
         ),
-        sa.ForeignKeyConstraint(
-            ["project_id"], ["projects.id"], ondelete="SET NULL"
-        ),
+        sa.ForeignKeyConstraint(["project_id"], ["projects.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
     )
 

@@ -275,7 +275,13 @@ async def get_qc_service() -> QCApplicationService:
 async def shutdown_media_jobs() -> None:
     global _management_service, _media_assets_service, _media_jobs_database
     global _media_jobs_service, _audit_repository, _budget_service, _prompt_service, _qc_service
-    global _experiment_service, _knowledge_service, _product_service, _video_service, _anime_service, _orchestration_service
+    global \
+        _experiment_service, \
+        _knowledge_service, \
+        _product_service, \
+        _video_service, \
+        _anime_service, \
+        _orchestration_service
     if _media_jobs_database is not None:
         await _media_jobs_database.dispose()
     _media_jobs_database = None
@@ -470,7 +476,9 @@ async def _mock_llm_caller(text: str) -> str:
     if "copywriter" in text:
         return '{"hooks": ["3秒抓住注意力"], "ctas": ["立即下单"], "body_copy": "核心卖点文案"}'
     if "supervisor" in text:
-        return '{"grade": "B", "severe_issues": 0, "medium_issues": 2, "suggestions": ["建议强化CTA"]}'
+        return (
+            '{"grade": "B", "severe_issues": 0, "medium_issues": 2, "suggestions": ["建议强化CTA"]}'
+        )
     return (
         '{"target_audience": "25-45岁女性",'
         ' "creative_directions": [{"hook": "品质感", "angle": "奢华风", "cta": "购买"}],'
@@ -506,13 +514,9 @@ async def get_orchestration_service() -> OrchestrationService:
 
         budget_guard = BudgetGuard(budget_repository.get_config, spent_resolver)
         sub_agents = {
-            "run_content_strategist": ContentStrategist(
-                _mock_llm_caller, prompt_compiler=compile
-            ),
+            "run_content_strategist": ContentStrategist(_mock_llm_caller, prompt_compiler=compile),
             "run_copywriter": Copywriter(_mock_llm_caller, prompt_compiler=compile),
-            "run_storyboard_planner": StoryboardPlanner(
-                _mock_llm_caller, prompt_compiler=compile
-            ),
+            "run_storyboard_planner": StoryboardPlanner(_mock_llm_caller, prompt_compiler=compile),
             "run_supervisor": Supervisor(_mock_llm_caller, prompt_compiler=compile),
         }
         decision_agent = DecisionAgent(sub_agents, llm_caller=_mock_llm_caller)
