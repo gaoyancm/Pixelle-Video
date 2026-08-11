@@ -8,6 +8,7 @@ from typing import Any, Callable
 from pixelle_video.media_assets.repository import AssetRepository
 from pixelle_video.media_jobs.repository import MediaJobRepository
 from pixelle_video.products.ad_engine import AdProductionEngine
+from pixelle_video.products.brief_mapper import BriefMapper
 from pixelle_video.products.delivery import DeliveryPackager
 from pixelle_video.products.platform_adapter import PlatformAdapter
 from pixelle_video.products.repository import ProductBriefRepository
@@ -32,8 +33,14 @@ class ProductApplicationService:
         delivery_packager: DeliveryPackager | None = None,
         prompt_compiler: Callable[..., str] | None = None,
         qc_runner: Callable[[str], Any] | None = None,
+        copywriter_agent: Any | None = None,
+        plan_repository: Any | None = None,
+        brief_mapper: Any | None = None,
     ):
         self.repository = repository
+        self.copywriter_agent = copywriter_agent
+        self.plan_repository = plan_repository
+        self.brief_mapper = brief_mapper
         self.ad_engine = ad_engine
         self.asset_repository = asset_repository
         self.job_repository = job_repository
@@ -79,8 +86,120 @@ class ProductApplicationService:
 
     # --- A1 generate ideas (via 04-A prompt compiler) ------------------------------
 
+    async def create_brief_from_plan(self, plan_id: str) -> dict[str, Any]:
+        """A1: auto-map a 04-E Content Plan onto a product brief."""
+        if self.plan_repository is None:
+            raise RuntimeError("plan repository not configured")
+        plan = await self.plan_repository.get_plan(plan_id)
+        if plan is None:
+            from pixelle_video.orchestration.repository import ContentPlanNotFoundError
+
+            raise ContentPlanNotFoundError("content plan not found")
+        mapper = self.brief_mapper or BriefMapper()
+        mapped = mapper.map(plan)
+        brief = await self.repository.create_brief(
+            product_name=mapped["product_name"],
+            description=mapped["description"],
+            project_id=mapped["project_id"],
+            selling_points=mapped["selling_points_json"],
+            target_audience=mapped["target_audience"],
+            platforms=mapped["platforms_json"],
+            reference_images=mapped["reference_images_json"],
+        )
+        return {
+            "brief_id": brief.id,
+            "plan_id": plan.id,
+            "product_name": brief.product_name,
+            "description": brief.description,
+            "target_audience": brief.target_audience,
+            "selling_points": brief.selling_points_json,
+            "platforms": brief.platforms_json,
+        }
+
+    async def get_plan_for_brief(self, brief_id: str) -> dict[str, Any] | None:
+        """A1: trace back from a brief to its source content plan."""
+        brief = await self._require(brief_id)
+        if self.plan_repository is None:
+            return None
+        meta = None
+        for entry in brief.reference_images_json or []:
+            if isinstance(entry, dict) and entry.get("plan_id"):
+                meta = entry
+                break
+        if meta is None:
+            return None
+        plan = await self.plan_repository.get_plan(meta["plan_id"])
+        if plan is None:
+            return None
+        return {
+            "plan_id": plan.id,
+            "intent": plan.intent,
+            "status": plan.status,
+            "summary": (plan.plan_json or {}).get("summary", ""),
+            "cost_estimate": plan.cost_estimate,
+        }
+
+    async def confirm_from_plan(self, brief_id: str) -> dict[str, Any]:
+        """A3: one-step confirm + generate-ideas + start production."""
+        await self._require(brief_id)
+        ideas_payload = await self.generate_ideas(brief_id)
+        if self.ad_engine is None:
+            raise RuntimeError("ad engine not configured")
+        production = await self.ad_engine.start_production(brief_id)
+        await self.repository.update_status(brief_id, "processing")
+        return {
+            "brief_id": brief_id,
+            "status": "processing",
+            "ideas": ideas_payload.get("ideas", []),
+            "source": ideas_payload.get("source", "template"),
+            **production,
+        }
+
     async def generate_ideas(self, brief_id: str) -> dict[str, Any]:
         brief = await self._require(brief_id)
+        if self.copywriter_agent is not None:
+            return await self._generate_ideas_via_agent(brief)
+        return await self._generate_ideas_template(brief)
+
+    async def _generate_ideas_via_agent(self, brief) -> dict[str, Any]:
+        """A2: route copy generation through the 04-E copywriter sub-agent."""
+        meta = None
+        for entry in brief.reference_images_json or []:
+            if isinstance(entry, dict) and entry.get("plan_id"):
+                meta = entry
+                break
+        creative_directions = (meta or {}).get("creative_directions", [])
+        direction_hint = ""
+        if creative_directions:
+            direction_hint = "；".join(
+                str(d.get("angle") or d.get("hook") or d) for d in creative_directions[:2]
+            )
+        prompt = (
+            f"[run_copywriter] 为「{brief.product_name}」撰写广告文案。"
+            f"卖点：{'、'.join(brief.selling_points_json or [brief.description[:40]])}。"
+            f"受众：{brief.target_audience or '广泛受众'}。"
+            f"创意方向：{direction_hint or '悬念型、利益型、场景型'}。"
+            "输出 hooks（3 条）、ctas（3 条）、body_copy。"
+        )
+        result = await self.copywriter_agent.run(prompt)
+        content = result.content
+        hooks = content.get("hooks", []) or [brief.product_name]
+        ctas = content.get("ctas", []) or ["立即下单，限量优惠"]
+        styles = ["悬念型", "利益型", "场景型"]
+        ideas = []
+        for index, style in enumerate(styles):
+            ideas.append(
+                {
+                    "hook": hooks[index % len(hooks)],
+                    "headline": f"{brief.product_name}｜{'、'.join(brief.selling_points_json or [])}",
+                    "cta": ctas[index % len(ctas)],
+                    "style": style,
+                }
+            )
+        return {"brief_id": brief.id, "ideas": ideas, "source": "04-e-copywriter"}
+
+    async def _generate_ideas_template(self, brief) -> dict[str, Any]:
+        """Legacy template path (kept for backwards compatibility)."""
         points = "、".join(brief.selling_points_json or [brief.description[:40]])
         audience = brief.target_audience or "广泛受众"
         styles = ["悬念型", "利益型", "场景型"]
@@ -107,7 +226,7 @@ class ProductApplicationService:
                     "style": style,
                 }
             )
-        return {"brief_id": brief_id, "ideas": ideas}
+        return {"brief_id": brief.id, "ideas": ideas}
 
     # --- A1 confirm -> A2 production -------------------------------------------------
 

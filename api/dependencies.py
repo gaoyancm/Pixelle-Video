@@ -55,6 +55,7 @@ from pixelle_video.orchestration.pipeline import OrchestrationPipeline
 from pixelle_video.orchestration.repository import ContentPlanRepository
 from pixelle_video.orchestration.router import IntentRouter
 from pixelle_video.products.ad_engine import AdProductionEngine
+from pixelle_video.products.brief_mapper import BriefMapper
 from pixelle_video.products.delivery import DeliveryPackager
 from pixelle_video.products.platform_adapter import PlatformAdapter
 from pixelle_video.products.repository import ProductBriefRepository
@@ -373,6 +374,14 @@ async def get_product_service() -> ProductApplicationService:
             exports_root="exports",
             qc_runner=qc_executor.run_qc,
         )
+        plan_repository = ContentPlanRepository(sessions)
+        copywriter_agent = None
+        try:
+            from pixelle_video.orchestration.agents.sub_agents import Copywriter
+
+            copywriter_agent = Copywriter(_mock_llm_caller, prompt_compiler=compile)
+        except Exception:
+            logger.warning("copywriter agent unavailable for product pipeline")
         _product_service = ProductApplicationService(
             brief_repository,
             ad_engine=ad_engine,
@@ -382,6 +391,9 @@ async def get_product_service() -> ProductApplicationService:
             delivery_packager=packager,
             prompt_compiler=compile,
             qc_runner=qc_executor.run_qc,
+            copywriter_agent=copywriter_agent,
+            plan_repository=plan_repository,
+            brief_mapper=BriefMapper(),
         )
     return _product_service
 

@@ -119,6 +119,26 @@ async def generate_ideas(brief_id: str, service: ProductServiceDep):
     return await service.generate_ideas(brief_id)
 
 
+@router.post("/briefs/from-plan/{plan_id}", status_code=201)
+async def create_brief_from_plan(plan_id: str, service: ProductServiceDep):
+    return await service.create_brief_from_plan(plan_id)
+
+
+@router.get("/briefs/{brief_id}/plan")
+async def get_plan_for_brief(brief_id: str, service: ProductServiceDep):
+    result = await service.get_plan_for_brief(brief_id)
+    if result is None:
+        from api.routers.products import _error
+
+        return _error(404, "plan_link_missing", "No linked content plan for this brief.")
+    return result
+
+
+@router.post("/briefs/{brief_id}/confirm-from-plan", response_model=ConfirmResponse)
+async def confirm_from_plan(brief_id: str, service: ProductServiceDep):
+    return await service.confirm_from_plan(brief_id)
+
+
 @router.post("/briefs/{brief_id}/confirm", response_model=ConfirmResponse)
 async def confirm_brief(brief_id: str, service: ProductServiceDep):
     return await service.confirm(brief_id)

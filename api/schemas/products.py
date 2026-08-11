@@ -68,6 +68,7 @@ class IdeaOption(StrictModel):
 class GenerateIdeasResponse(StrictModel):
     brief_id: str
     ideas: list[IdeaOption]
+    source: str | None = None  # "04-e-copywriter" when routed via the 04-E agent
 
 
 class ConfirmResponse(StrictModel):
@@ -76,6 +77,8 @@ class ConfirmResponse(StrictModel):
     batch_id: str
     tasks: int
     jobs: dict[str, list[str]]
+    ideas: list[IdeaOption] = Field(default_factory=list)
+    source: str | None = None  # "04-e-copywriter" when routed via the 04-E agent
 
 
 class ProgressResponse(StrictModel):
