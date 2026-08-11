@@ -74,17 +74,33 @@ class ConsistencyGuard:
         }
 
     async def character_report(self, character_id: str) -> dict[str, Any]:
-        """Report a character's consistency across all produced shots."""
+        """Report a character's consistency across every shot that uses it."""
         character = await self.repository.get_character(character_id)
         if character is None:
             from pixelle_video.anime.repository import AnimeNotFoundError
 
             raise AnimeNotFoundError("character not found")
-        # Scan all shots referencing this character (conservative: any shot whose
-        # character_states mention the character id).
+        # Scan every shot whose character_states mention this character and
+        # produce a per-shot consistency verdict.
         findings: list[dict[str, Any]] = []
-        # Gather via repository: iterate episodes -> scenes -> shots is heavy;
-        # use the guard's prompt consistency check on shots that mention the char.
+        shots = await self.repository.list_shots_for_character(character_id)
+        for shot in shots:
+            if shot.status in {"succeeded", "done"}:
+                consistent, reason = True, "pass"
+            elif shot.status in {"failed", "rejected"}:
+                consistent, reason = False, f"shot {shot.status}"
+            else:
+                consistent, reason = False, f"shot not produced ({shot.status})"
+            findings.append(
+                {
+                    "shot_id": shot.id,
+                    "shot_no": shot.shot_no,
+                    "scene_id": shot.scene_id,
+                    "consistent": consistent,
+                    "reason": reason,
+                    "status": shot.status,
+                }
+            )
         return {
             "character_id": character_id,
             "character_name": character.name,

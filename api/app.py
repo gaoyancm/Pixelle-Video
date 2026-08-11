@@ -46,6 +46,7 @@ from api.dependencies import shutdown_media_jobs, shutdown_pixelle_video
 
 # Import routers
 from api.routers import (
+    anime_router,
     audit_budget_router,
     content_router,
     experiments_router,
@@ -58,7 +59,6 @@ from api.routers import (
     management_router,
     media_assets_router,
     media_jobs_router,
-    anime_router,
     products_router,
     prompts_router,
     qc_router,

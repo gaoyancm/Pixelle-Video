@@ -132,12 +132,44 @@ async def test_check_consistency_ignores_unrelated_categories(env) -> None:
 
 
 async def test_character_report(env) -> None:
+    """C4: the report must scan the character's shots and return non-empty
+    per-shot verdicts (not just metadata fields)."""
     _factory, repository, guard, _service = env
     character = await _make_character(repository)
+    # Two shots referencing the same character: one succeeded, one failed.
+    ok_shot = await repository.create_shot(
+        scene_id="scene-1",
+        shot_no=1,
+        duration_sec=5,
+        visual_description="镜头1",
+        character_states=[{"char_id": character.id, "emotion": "平静"}],
+    )
+    await repository.update_shot(ok_shot.id, status="succeeded", generated_asset_id="asset-ok")
+    bad_shot = await repository.create_shot(
+        scene_id="scene-1",
+        shot_no=2,
+        duration_sec=5,
+        visual_description="镜头2",
+        character_states=[{"char_id": character.id, "emotion": "愤怒"}],
+    )
+    await repository.update_shot(bad_shot.id, status="failed")
+    # An unrelated shot must not appear in the report.
+    await repository.create_shot(
+        scene_id="scene-2",
+        shot_no=1,
+        duration_sec=5,
+        visual_description="无关镜头",
+        character_states=[{"char_id": "other-char"}],
+    )
+
     report = await guard.character_report(character.id)
     assert report["character_name"] == "李逍遥"
     assert report["static_features"]["gender"] == "男"
     assert report["dynamic_features"]["costume"] == "蓝色道袍"
+    assert len(report["reports"]) == 2  # both character shots scanned
+    verdicts = {item["shot_id"]: item["consistent"] for item in report["reports"]}
+    assert verdicts[ok_shot.id] is True
+    assert verdicts[bad_shot.id] is False
 
 
 async def test_episode_report_counts_shots(env) -> None:
