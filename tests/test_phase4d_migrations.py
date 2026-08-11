@@ -13,7 +13,7 @@ from pixelle_video.media_jobs.database import sqlite_url_for_path
 
 PROJECT_ROOT = Path(__file__).parents[1]
 PREVIOUS_REVISION = "0008_add_experiments"
-HEAD_REVISION = "0015_add_anime_series"
+HEAD_REVISION = "0016_add_content_plans"
 NEW_TABLES = {
     "knowledge_entries",
     "knowledge_tags",
@@ -46,7 +46,7 @@ def test_phase4d_migration_has_one_head_and_follows_0008() -> None:
     script = ScriptDirectory.from_config(config(Path("unused.db")))
     assert script.get_heads() == [HEAD_REVISION]
     revision = script.get_revision(HEAD_REVISION)
-    assert revision is not None and revision.down_revision == "0014_add_anime_assets"
+    assert revision is not None and revision.down_revision == "0015_add_anime_series"
     build = script.get_revision("0009_add_knowledge")
     assert build is not None and build.down_revision == PREVIOUS_REVISION
 

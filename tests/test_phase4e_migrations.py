@@ -1,4 +1,4 @@
-"""Phase 05 migration tests: product briefs table and head."""
+"""Phase 04-E migration tests: content plans table."""
 
 from __future__ import annotations
 
@@ -27,49 +27,46 @@ def sync_url(path: Path) -> str:
     return f"sqlite:///{path.resolve().as_posix()}"
 
 
-def test_phase5_migration_has_one_head_and_follows_0010() -> None:
+def test_phase4e_migration_has_one_head_and_follows_0015() -> None:
     script = ScriptDirectory.from_config(config(Path("unused.db")))
     assert script.get_heads() == [HEAD_REVISION]
     revision = script.get_revision(HEAD_REVISION)
     assert revision is not None and revision.down_revision == PREVIOUS_REVISION
 
 
-def test_upgrade_creates_product_briefs_table(tmp_path: Path) -> None:
+def test_upgrade_creates_content_plans_table(tmp_path: Path) -> None:
     path = tmp_path / "empty.db"
     command.upgrade(config(path), "head")
     engine = create_engine(sync_url(path))
     try:
         inspector = inspect(engine)
-        assert "product_briefs" in inspector.get_table_names()
-        columns = {column["name"] for column in inspector.get_columns("product_briefs")}
+        assert "content_plans" in inspector.get_table_names()
+        columns = {column["name"] for column in inspector.get_columns("content_plans")}
         assert {
             "id",
             "project_id",
-            "product_name",
-            "category",
-            "description",
-            "selling_points_json",
-            "target_audience",
-            "brand_profile_id",
-            "platforms_json",
-            "reference_images_json",
+            "request_text",
+            "intent",
+            "plan_json",
             "status",
+            "cost_estimate",
+            "checkpoint_json",
             "created_at",
-            "updated_at",
         } <= columns
-        checks = {item["name"] for item in inspector.get_check_constraints("product_briefs")}
-        assert "ck_product_briefs_status" in checks
+        checks = {item["name"] for item in inspector.get_check_constraints("content_plans")}
+        assert "ck_content_plans_status" in checks
+        assert "ck_content_plans_intent" in checks
     finally:
         engine.dispose()
 
 
-def test_downgrade_removes_product_briefs(tmp_path: Path) -> None:
+def test_downgrade_removes_content_plans(tmp_path: Path) -> None:
     path = tmp_path / "round-trip.db"
     value = config(path)
     command.upgrade(value, "head")
-    command.downgrade(value, "0010_seed_knowledge")
+    command.downgrade(value, "0015_add_anime_series")
     engine = create_engine(sync_url(path))
     try:
-        assert "product_briefs" not in inspect(engine).get_table_names()
+        assert "content_plans" not in inspect(engine).get_table_names()
     finally:
         engine.dispose()

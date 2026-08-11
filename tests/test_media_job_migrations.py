@@ -55,7 +55,7 @@ def test_alembic_upgrades_empty_database_to_head(tmp_path: Path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "0015_add_anime_series"
+        assert revision == "0016_add_content_plans"
     finally:
         engine.dispose()
 

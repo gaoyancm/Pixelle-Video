@@ -27,6 +27,7 @@ from api.services.experiments import ExperimentApplicationService
 from api.services.knowledge import KnowledgeApplicationService
 from api.services.management import ManagementApplicationService
 from api.services.media_jobs import MediaJobApplicationService
+from api.services.orchestration import OrchestrationService
 from api.services.products import ProductApplicationService
 from api.services.prompts import PromptApplicationService
 from api.services.qc import QCApplicationService
@@ -42,6 +43,17 @@ from pixelle_video.knowledge.repository import KnowledgeRepository
 from pixelle_video.management import ManagementRepository
 from pixelle_video.media_assets import AssetRepository, AssetService, LocalAssetStore
 from pixelle_video.media_jobs import MediaJobRepository, MediaJobsDatabase
+from pixelle_video.orchestration.agents.decision_agent import DecisionAgent
+from pixelle_video.orchestration.agents.sub_agents import (
+    ContentStrategist,
+    Copywriter,
+    StoryboardPlanner,
+    Supervisor,
+)
+from pixelle_video.orchestration.budget_guard import BudgetGuard
+from pixelle_video.orchestration.pipeline import OrchestrationPipeline
+from pixelle_video.orchestration.repository import ContentPlanRepository
+from pixelle_video.orchestration.router import IntentRouter
 from pixelle_video.products.ad_engine import AdProductionEngine
 from pixelle_video.products.delivery import DeliveryPackager
 from pixelle_video.products.platform_adapter import PlatformAdapter
@@ -73,6 +85,7 @@ _experiment_service: ExperimentApplicationService | None = None
 _knowledge_service: KnowledgeApplicationService | None = None
 _product_service: ProductApplicationService | None = None
 _anime_service: AnimeApplicationService | None = None
+_orchestration_service: OrchestrationService | None = None
 _video_service: VideoApplicationService | None = None
 
 
@@ -262,7 +275,7 @@ async def get_qc_service() -> QCApplicationService:
 async def shutdown_media_jobs() -> None:
     global _management_service, _media_assets_service, _media_jobs_database
     global _media_jobs_service, _audit_repository, _budget_service, _prompt_service, _qc_service
-    global _experiment_service, _knowledge_service, _product_service, _video_service, _anime_service
+    global _experiment_service, _knowledge_service, _product_service, _video_service, _anime_service, _orchestration_service
     if _media_jobs_database is not None:
         await _media_jobs_database.dispose()
     _media_jobs_database = None
@@ -278,6 +291,7 @@ async def shutdown_media_jobs() -> None:
     _product_service = None
     _video_service = None
     _anime_service = None
+    _orchestration_service = None
 
 
 async def get_experiment_service() -> ExperimentApplicationService:
@@ -446,6 +460,79 @@ async def get_anime_service() -> AnimeApplicationService:
     return _anime_service
 
 
+async def _mock_llm_caller(text: str) -> str:
+    """Deterministic mock LLM: returns valid JSON for the requested tool."""
+    if "storyboard_planner" in text:
+        return (
+            '{"scenes": [{"index": 1, "desc": "开场"}, {"index": 2, "desc": "主体"}],'
+            ' "camera_notes": "推近"}'
+        )
+    if "copywriter" in text:
+        return '{"hooks": ["3秒抓住注意力"], "ctas": ["立即下单"], "body_copy": "核心卖点文案"}'
+    if "supervisor" in text:
+        return '{"grade": "B", "severe_issues": 0, "medium_issues": 2, "suggestions": ["建议强化CTA"]}'
+    return (
+        '{"target_audience": "25-45岁女性",'
+        ' "creative_directions": [{"hook": "品质感", "angle": "奢华风", "cta": "购买"}],'
+        ' "visual_style": {"palette": "暖色", "mood": "精致"}}'
+    )
+
+
+async def get_orchestration_service() -> OrchestrationService:
+    """Lazily build the phase 04-E LLM orchestration pipeline (mock LLM)."""
+
+    global _orchestration_service, _media_jobs_database
+    if _orchestration_service is None:
+        manager = ConfigManager()
+        config = manager.config.media_jobs
+        if _media_jobs_database is None:
+            _media_jobs_database = MediaJobsDatabase(config)
+        sessions = _media_jobs_database.connect()
+        plan_repository = ContentPlanRepository(sessions)
+        audit_repository = AuditRepository(sessions)
+        budget_repository = BudgetRepository(sessions)
+
+        async def spent_resolver(plan_id: str) -> float:
+            events, _ = await audit_repository.list(
+                scope_type="content_plan",
+                scope_id=plan_id,
+                event_type="llm_call",
+                limit=500,
+            )
+            return round(
+                sum(float(e.cost_snapshot.get("cost", 0.0)) for e in events if e.cost_snapshot),
+                6,
+            )
+
+        budget_guard = BudgetGuard(budget_repository.get_config, spent_resolver)
+        sub_agents = {
+            "run_content_strategist": ContentStrategist(
+                _mock_llm_caller, prompt_compiler=compile
+            ),
+            "run_copywriter": Copywriter(_mock_llm_caller, prompt_compiler=compile),
+            "run_storyboard_planner": StoryboardPlanner(
+                _mock_llm_caller, prompt_compiler=compile
+            ),
+            "run_supervisor": Supervisor(_mock_llm_caller, prompt_compiler=compile),
+        }
+        decision_agent = DecisionAgent(sub_agents, llm_caller=_mock_llm_caller)
+        pipeline = OrchestrationPipeline(
+            plan_repository,
+            decision_agent,
+            supervisor=sub_agents["run_supervisor"],
+            budget_guard=budget_guard,
+            audit_recorder=audit_repository.record,
+        )
+        _orchestration_service = OrchestrationService(
+            plan_repository,
+            intent_router=IntentRouter(),
+            decision_agent=decision_agent,
+            pipeline=pipeline,
+            llm_caller=_mock_llm_caller,
+        )
+    return _orchestration_service
+
+
 # Type alias for dependency injection
 PixelleVideoDep = Annotated[PixelleVideoCore, Depends(get_pixelle_video)]
 MediaJobServiceDep = Annotated[MediaJobApplicationService, Depends(get_media_job_service)]
@@ -460,3 +547,4 @@ KnowledgeServiceDep = Annotated[KnowledgeApplicationService, Depends(get_knowled
 ProductServiceDep = Annotated[ProductApplicationService, Depends(get_product_service)]
 VideoServiceDep = Annotated[VideoApplicationService, Depends(get_video_service)]
 AnimeServiceDep = Annotated[AnimeApplicationService, Depends(get_anime_service)]
+OrchestrationServiceDep = Annotated[OrchestrationService, Depends(get_orchestration_service)]
