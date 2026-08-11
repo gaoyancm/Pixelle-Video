@@ -13,7 +13,9 @@ import json
 from typing import Any, Awaitable, Callable
 
 from pixelle_video.orchestration.contracts import (
+    ConsistencyVerdictOutput,
     CopywriterOutput,
+    EpisodePlanOutput,
     StoryboardOutput,
     StrategistOutput,
     SubAgentResult,
@@ -110,6 +112,26 @@ class StoryboardPlanner(SubAgent):
     def _parse(self, reply: str) -> dict[str, Any]:
         data = parse_json_object(reply)
         return StoryboardOutput(**data).model_dump()
+
+
+class ConsistencyVerifier(SubAgent):
+    """D3: cross-episode character-arc consistency verdict."""
+
+    name = "consistency_verifier"
+
+    def _parse(self, reply: str) -> dict[str, Any]:
+        data = parse_json_object(reply)
+        return ConsistencyVerdictOutput(**data).model_dump()
+
+
+class EpisodePlanner(SubAgent):
+    """D2: multi-episode structure planner (seasons/arcs/foreshadowing)."""
+
+    name = "episode_planner"
+
+    def _parse(self, reply: str) -> dict[str, Any]:
+        data = parse_json_object(reply)
+        return EpisodePlanOutput(**data).model_dump()
 
 
 class Supervisor(SubAgent):

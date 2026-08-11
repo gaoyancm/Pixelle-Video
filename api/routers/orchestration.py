@@ -120,6 +120,11 @@ async def retry_stage(plan_id: str, stage_name: str, service: OrchestrationServi
     return await service.retry_stage(plan_id, stage_name)
 
 
+@router.post("/plans/{plan_id}/generate-episode-plan")
+async def generate_episode_plan(plan_id: str, service: OrchestrationServiceDep):
+    return await service.generate_episode_plan(plan_id)
+
+
 @router.get("/plans/{plan_id}/approval-summary", response_model=ApprovalSummaryResponse)
 async def approval_summary(plan_id: str, service: OrchestrationServiceDep):
     return await service.approval_summary(plan_id)

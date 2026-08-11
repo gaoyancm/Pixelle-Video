@@ -22,12 +22,14 @@ class OrchestrationService:
         decision_agent: DecisionAgent | None = None,
         pipeline: OrchestrationPipeline | None = None,
         llm_caller: Callable[[str], Awaitable[str]] | None = None,
+        episode_planner: Any | None = None,
     ):
         self.repository = repository
         self.intent_router = intent_router or IntentRouter()
         self.decision_agent = decision_agent
         self.pipeline = pipeline
         self.llm_caller = llm_caller
+        self.episode_planner = episode_planner
 
     # --- L1 ---------------------------------------------------------------------
 
@@ -93,6 +95,35 @@ class OrchestrationService:
         checkpoint["retry_count"][stage] = 0
         await self.repository.update_plan(plan_id, status="generating", checkpoint_json=checkpoint)
         return await self.generate(plan_id)
+
+    async def generate_episode_plan(self, plan_id: str) -> dict[str, Any]:
+        """D2: extend a Content Plan with season/episode structure, character
+        arcs and foreshadowing (reuses plan_json — no new tables)."""
+        plan = await self._require(plan_id)
+        if plan.intent != "animation":
+            raise ValueError(f"plan intent {plan.intent} is not animation")
+        if self.episode_planner is None:
+            raise RuntimeError("episode planner not configured")
+        plan_json = dict(plan.plan_json or {})
+        prompt = (
+            f"[run_storyboard_planner] 为动画项目规划多集结构。世界观："
+            f"{plan_json.get('summary', plan.request_text[:100])}。"
+            "输出 seasons（season_no/episodes[episode_no/title/hook/arc]）、"
+            "character_arcs（character_id/season_arc/key_episodes）、"
+            "foreshadowing_map（setup/payoff）。"
+        )
+        result = await self.episode_planner.run(prompt)
+        content = result.content
+        plan_json["seasons"] = content.get("seasons", [])
+        plan_json["character_arcs"] = content.get("character_arcs", [])
+        plan_json["foreshadowing_map"] = content.get("foreshadowing_map", [])
+        updated = await self.repository.update_plan(plan_id, plan_json=plan_json)
+        return {
+            "plan_id": plan_id,
+            "seasons": updated.plan_json.get("seasons", []),
+            "character_arcs": updated.plan_json.get("character_arcs", []),
+            "foreshadowing_map": updated.plan_json.get("foreshadowing_map", []),
+        }
 
     async def approval_summary(self, plan_id: str) -> dict[str, Any]:
         plan = await self._require(plan_id)

@@ -3,8 +3,10 @@
 from pixelle_video.orchestration.agents.decision_agent import DecisionAgent
 from pixelle_video.orchestration.agents.sub_agents import (
     MAX_RETRIES,
+    ConsistencyVerifier,
     ContentStrategist,
     Copywriter,
+    EpisodePlanner,
     StoryboardPlanner,
     SubAgent,
     Supervisor,
@@ -26,7 +28,9 @@ __all__ = [
     "IntentRouter",
     "DecisionAgent",
     "SubAgent",
+    "ConsistencyVerifier",
     "ContentStrategist",
+    "EpisodePlanner",
     "Copywriter",
     "StoryboardPlanner",
     "Supervisor",

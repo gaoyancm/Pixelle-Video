@@ -44,6 +44,17 @@ class StoryboardOutput(StrictModel):
     camera_notes: str
 
 
+class EpisodePlanOutput(StrictModel):
+    seasons: list[dict[str, Any]]
+    character_arcs: list[dict[str, Any]] = Field(default_factory=list)
+    foreshadowing_map: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ConsistencyVerdictOutput(StrictModel):
+    consistent: bool
+    issues: list[str] = Field(default_factory=list)
+
+
 class SupervisionOutput(StrictModel):
     grade: Grade
     severe_issues: int = Field(ge=0)
