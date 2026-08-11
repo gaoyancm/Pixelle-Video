@@ -439,9 +439,7 @@ async def get_video_service() -> VideoApplicationService:
         try:
             from pixelle_video.orchestration.agents.sub_agents import StoryboardPlanner
 
-            storyboard_planner = StoryboardPlanner(
-                _mock_llm_caller, prompt_compiler=compile
-            )
+            storyboard_planner = StoryboardPlanner(_mock_llm_caller, prompt_compiler=compile)
         except Exception:
             logger.warning("storyboard planner unavailable for video pipeline")
         _video_service = VideoApplicationService(
