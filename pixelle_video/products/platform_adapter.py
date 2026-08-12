@@ -38,6 +38,12 @@ PLATFORM_SPECS: dict[str, dict[str, Any]] = {
         "max_seconds": 15,
         "format": "mp4",
     },
+    "xiaohongshu": {
+        "image_size": (1080, 1440),
+        "video_size": (1080, 1920),
+        "max_seconds": 900,
+        "format": "mp4",
+    },
     "youtube_shorts": {
         "image_size": None,
         "video_size": (1920, 1080),
