@@ -378,11 +378,12 @@ async def get_product_service() -> ProductApplicationService:
             qc_runner=qc_executor.run_qc,
         )
         plan_repository = ContentPlanRepository(sessions)
+        llm_caller = _resolve_llm_caller(manager)
         copywriter_agent = None
         try:
             from pixelle_video.orchestration.agents.sub_agents import Copywriter
 
-            copywriter_agent = Copywriter(_mock_llm_caller, prompt_compiler=compile)
+            copywriter_agent = Copywriter(llm_caller, prompt_compiler=compile)
         except Exception:
             logger.warning("copywriter agent unavailable for product pipeline")
         _product_service = ProductApplicationService(
@@ -437,11 +438,12 @@ async def get_video_service() -> VideoApplicationService:
             bgm_matcher=bgm_matcher,
             asset_resolver=resolve_frame_asset,
         )
+        llm_caller = _resolve_llm_caller(manager)
         storyboard_planner = None
         try:
             from pixelle_video.orchestration.agents.sub_agents import StoryboardPlanner
 
-            storyboard_planner = StoryboardPlanner(_mock_llm_caller, prompt_compiler=compile)
+            storyboard_planner = StoryboardPlanner(llm_caller, prompt_compiler=compile)
         except Exception:
             logger.warning("storyboard planner unavailable for video pipeline")
         _video_service = VideoApplicationService(
@@ -480,11 +482,12 @@ async def get_anime_service() -> AnimeApplicationService:
         anime_repository = AnimeRepository(sessions)
         job_repository = MediaJobRepository(sessions)
         plan_repository = ContentPlanRepository(sessions)
+        llm_caller = _resolve_llm_caller(manager)
         storyboard_planner_anime = None
         try:
             from pixelle_video.orchestration.agents.sub_agents import StoryboardPlanner
 
-            storyboard_planner_anime = StoryboardPlanner(_mock_llm_caller, prompt_compiler=compile)
+            storyboard_planner_anime = StoryboardPlanner(llm_caller, prompt_compiler=compile)
         except Exception:
             logger.warning("storyboard planner unavailable for anime pipeline")
         _anime_service = AnimeApplicationService(
@@ -497,9 +500,36 @@ async def get_anime_service() -> AnimeApplicationService:
             consistency_guard=ConsistencyGuard(anime_repository),
             storyboard_planner=storyboard_planner_anime,
             plan_repository=plan_repository,
-            consistency_verifier=ConsistencyVerifier(_mock_llm_caller, prompt_compiler=compile),
+            consistency_verifier=ConsistencyVerifier(llm_caller, prompt_compiler=compile),
         )
     return _anime_service
+
+
+def _resolve_llm_caller(manager):
+    """D2: real DeepSeek caller when configured, else the deterministic mock.
+
+    API key resolution order: DEEPSEEK_API_KEY env var -> config.yaml llm.api_key.
+    """
+    import os
+
+    from pixelle_video.orchestration.llm.deepseek_caller import deepseek_llm_caller
+
+    llm = getattr(getattr(manager, "config", None), "llm", None)
+    if llm is None:
+        logger.info("LLM caller: mock (no llm config)")
+        return _mock_llm_caller
+    api_key = (os.environ.get("DEEPSEEK_API_KEY", "") or "").strip() or (llm.api_key or "").strip()
+    base_url = (llm.base_url or "").strip()
+    model = (llm.model or "").strip()
+    if api_key and base_url and model:
+        logger.info("LLM caller: real DeepSeek (%s @ %s)", model, base_url)
+
+        async def _real_caller(text: str) -> str:
+            return await deepseek_llm_caller(text, model=model, api_key=api_key, base_url=base_url)
+
+        return _real_caller
+    logger.info("LLM caller: mock (no api key / base url / model)")
+    return _mock_llm_caller
 
 
 async def _mock_llm_caller(text: str) -> str:
@@ -559,13 +589,14 @@ async def get_orchestration_service() -> OrchestrationService:
             )
 
         budget_guard = BudgetGuard(budget_repository.get_config, spent_resolver)
+        llm_caller = _resolve_llm_caller(manager)
         sub_agents = {
-            "run_content_strategist": ContentStrategist(_mock_llm_caller, prompt_compiler=compile),
-            "run_copywriter": Copywriter(_mock_llm_caller, prompt_compiler=compile),
-            "run_storyboard_planner": StoryboardPlanner(_mock_llm_caller, prompt_compiler=compile),
-            "run_supervisor": Supervisor(_mock_llm_caller, prompt_compiler=compile),
+            "run_content_strategist": ContentStrategist(llm_caller, prompt_compiler=compile),
+            "run_copywriter": Copywriter(llm_caller, prompt_compiler=compile),
+            "run_storyboard_planner": StoryboardPlanner(llm_caller, prompt_compiler=compile),
+            "run_supervisor": Supervisor(llm_caller, prompt_compiler=compile),
         }
-        decision_agent = DecisionAgent(sub_agents, llm_caller=_mock_llm_caller)
+        decision_agent = DecisionAgent(sub_agents, llm_caller=llm_caller)
         pipeline = OrchestrationPipeline(
             plan_repository,
             decision_agent,
@@ -578,8 +609,8 @@ async def get_orchestration_service() -> OrchestrationService:
             intent_router=IntentRouter(),
             decision_agent=decision_agent,
             pipeline=pipeline,
-            llm_caller=_mock_llm_caller,
-            episode_planner=EpisodePlanner(_mock_llm_caller, prompt_compiler=compile),
+            llm_caller=llm_caller,
+            episode_planner=EpisodePlanner(llm_caller, prompt_compiler=compile),
         )
     return _orchestration_service
 
