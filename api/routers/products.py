@@ -73,6 +73,7 @@ class ProductRoute(APIRoute):
             except SQLAlchemyError:
                 return _error(503, "service_unavailable", "Product storage is unavailable.")
             except Exception:
+                import traceback; traceback.print_exc()
                 logger.error("Unhandled product API error")
                 return _error(500, "internal_error", "An internal error occurred.")
 

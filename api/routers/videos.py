@@ -62,7 +62,7 @@ class VideoRoute(APIRoute):
             except SQLAlchemyError:
                 return _error(503, "service_unavailable", "Video storage is unavailable.")
             except Exception:
-                logger.error("Unhandled video API error")
+                logger.error("Unhandled video API error", exc_info=True)
                 return _error(500, "internal_error", "An internal error occurred.")
 
         return handler
