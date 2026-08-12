@@ -100,7 +100,7 @@ async def deepseek_llm_caller(
         {
             "role": "system",
             "content": (
-                "You are a strict JSON API for a media-planning pipeline. "
+                "You are a strict JSON API for a Chinese media-planning pipeline. ALL text values inside the JSON object MUST be in Chinese. "
                 "Respond with ONLY a single valid JSON object matching the "
                 "requested schema. No markdown fences, no explanations, no "
                 "surrounding text."
