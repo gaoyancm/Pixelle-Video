@@ -28,7 +28,7 @@ def _default_api_base_url() -> str:
 
 API_BASE_URL = os.environ.get("API_BASE_URL", _default_api_base_url()).rstrip("/")
 
-CLIENT_TIMEOUT = 30.0
+CLIENT_TIMEOUT = 120.0  # real DeepSeek takes 30-60 s
 
 st.set_page_config(
     page_title="AI 媒体平台 · 统一入口",
