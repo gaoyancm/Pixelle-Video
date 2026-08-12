@@ -1,60 +1,63 @@
-# AI Media Platform — 一键启动脚本
-# 双击此文件或在 PowerShell 中运行：
-#   powershell -ExecutionPolicy Bypass -File scripts/start.ps1
+# AI Media Platform -- one-click launcher
+# Double-click start.bat or run: powershell -ExecutionPolicy Bypass -File scripts/start.ps1
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ProjectDir = Resolve-Path "$ScriptDir\..\06-source\pixelle-video"
+$ProjectDir = Resolve-Path "$ScriptDir\.."
 
-Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║   AI Media Platform · 启动中...     ║" -ForegroundColor Cyan
-Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
+$API = "$ProjectDir\.venv\Scripts\python.exe"
+$APIScript = "$ProjectDir\api\app.py"
 
-# 1. 确认 config.yaml 存在
+Write-Host "============================================" -ForegroundColor Cyan
+Write-Host "  AI Media Platform · launching ..." -ForegroundColor Cyan
+Write-Host "============================================" -ForegroundColor Cyan
+
+# 1. check config.yaml
 if (-not (Test-Path "$ProjectDir\config.yaml")) {
-    Write-Host "❌ 未找到 config.yaml，请先配置。" -ForegroundColor Red
+    Write-Host "[ERROR] config.yaml not found at $ProjectDir" -ForegroundColor Red
+    Read-Host "Press Enter to exit"
     exit 1
 }
 
-# 2. 启动 API 后端
-Write-Host "🚀 启动 API 服务 (http://localhost:8000) ..." -ForegroundColor Green
-$apiProcess = Start-Process -FilePath "$ProjectDir\.venv\Scripts\python.exe" `
-    -ArgumentList "$ProjectDir\api\app.py" `
+# 2. start API backend
+Write-Host "[1/3] Starting API server at http://localhost:8000 ..." -ForegroundColor Green
+$apiProcess = Start-Process -FilePath $API `
+    -ArgumentList $APIScript `
     -WorkingDirectory $ProjectDir `
     -WindowStyle Minimized `
     -PassThru
 
-Start-Sleep -Seconds 3
+Start-Sleep -Seconds 4
 
 if ($apiProcess.HasExited) {
-    Write-Host "❌ API 服务启动失败，请查看错误日志。" -ForegroundColor Red
+    Write-Host "[ERROR] API server failed to start." -ForegroundColor Red
+    Read-Host "Press Enter to exit"
     exit 1
 }
-Write-Host "✅ API 服务已启动 (PID: $($apiProcess.Id))" -ForegroundColor Green
+Write-Host "       API server PID: $($apiProcess.Id)" -ForegroundColor Green
 
-# 3. 启动 Streamlit
-Write-Host "🎨 启动 Streamlit 页面 (http://localhost:8501) ..." -ForegroundColor Green
-$streamlitProcess = Start-Process -FilePath "$ProjectDir\.venv\Scripts\python.exe" `
-    -ArgumentList "-m streamlit run pixelle_video\web\home.py --server.port 8501 --server.headless true" `
+# 3. start Streamlit
+Write-Host "[2/3] Starting Streamlit at http://localhost:8501 ..." -ForegroundColor Green
+$stProcess = Start-Process -FilePath $API `
+    -ArgumentList "-m streamlit run pixelle_video\web\home.py --server.port 8501 --server.headless true --browser.gatherUsageStats false" `
     -WorkingDirectory $ProjectDir `
     -WindowStyle Minimized `
     -PassThru
 
-Start-Sleep -Seconds 5
+Start-Sleep -Seconds 6
+Write-Host "       Streamlit PID: $($stProcess.Id)" -ForegroundColor Green
 
-# 4. 打开浏览器
-Write-Host "🌐 打开浏览器..." -ForegroundColor Cyan
+# 4. open browser
+Write-Host "[3/3] Opening browser ..." -ForegroundColor Cyan
 Start-Process "http://localhost:8501"
 
 Write-Host ""
-Write-Host "╔══════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║   ✅ 全部服务已启动                  ║" -ForegroundColor Cyan
-Write-Host "║   API:   http://localhost:8000/docs  ║" -ForegroundColor White
-Write-Host "║   页面:  http://localhost:8501       ║" -ForegroundColor White
-Write-Host "║   停止:  运行 scripts\stop.ps1       ║" -ForegroundColor White
-Write-Host "╚══════════════════════════════════════╝" -ForegroundColor Cyan
-Write-Host ""
+Write-Host "============================================" -ForegroundColor Cyan
+Write-Host "  All services started!" -ForegroundColor Green
+Write-Host "  API:   http://localhost:8000/docs" -ForegroundColor White
+Write-Host "  Web:   http://localhost:8501" -ForegroundColor White
+Write-Host "  Stop:  scripts/stop.bat" -ForegroundColor White
+Write-Host "============================================" -ForegroundColor Cyan
 
-# 保存 PID 到文件（用于 stop.ps1 精确杀进程）
-"$($apiProcess.Id)|$($streamlitProcess.Id)" | Out-File -FilePath "$env:TEMP\aimedia_pids.txt" -Encoding utf8
+"$($apiProcess.Id)|$($stProcess.Id)" | Out-File -FilePath "$env:TEMP\aimedia_pids.txt" -Encoding utf8
 
-Read-Host "按 Enter 关闭此窗口（服务将继续在后台运行）"
+Read-Host "Press Enter to close this window (services keep running)"
