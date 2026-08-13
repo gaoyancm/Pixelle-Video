@@ -21,12 +21,21 @@ API_BASE_URL = os.environ.get("API_BASE_URL", _default_api_base_url()).rstrip("/
 CLIENT_TIMEOUT = 120.0  # real DeepSeek takes 30-60 s
 
 
+def _safe_json(response: httpx.Response) -> Any:
+    """Parse a response body as JSON, falling back to None on bad payloads."""
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
 def api_post(path: str, json: dict[str, Any] | None = None) -> dict[str, Any] | None:
     try:
         with httpx.Client(base_url=API_BASE_URL, timeout=CLIENT_TIMEOUT) as client:
             response = client.post(path, json=json or {})
+        payload = _safe_json(response)
         if response.status_code >= 400:
-            err = (response.json() or {}).get("error", {})
+            err = (payload or {}).get("error", {})
             msg = (
                 err.get("message", f"HTTP {response.status_code}")
                 if isinstance(err, dict)
@@ -34,7 +43,7 @@ def api_post(path: str, json: dict[str, Any] | None = None) -> dict[str, Any] | 
             )
             st.error(f"POST {path}: {msg}")
             return None
-        return response.json()
+        return payload if isinstance(payload, dict) else None
     except httpx.HTTPError as exc:
         st.error(f"无法连接 API 服务（{API_BASE_URL}）：{exc}")
         return None
@@ -44,8 +53,9 @@ def api_get(path: str) -> dict[str, Any] | None:
     try:
         with httpx.Client(base_url=API_BASE_URL, timeout=CLIENT_TIMEOUT) as client:
             response = client.get(path)
+        payload = _safe_json(response)
         if response.status_code >= 400:
-            err = (response.json() or {}).get("error", {})
+            err = (payload or {}).get("error", {})
             msg = (
                 err.get("message", f"HTTP {response.status_code}")
                 if isinstance(err, dict)
@@ -53,7 +63,7 @@ def api_get(path: str) -> dict[str, Any] | None:
             )
             st.error(f"GET {path}: {msg}")
             return None
-        return response.json()
+        return payload if isinstance(payload, dict) else None
     except httpx.HTTPError as exc:
         st.error(f"无法连接 API 服务（{API_BASE_URL}）：{exc}")
         return None

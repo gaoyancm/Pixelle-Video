@@ -34,7 +34,14 @@ MAX_TURNS = 3  # 1 initial + 2 follow-ups for reasoning models
 
 
 def _json_type(prop: dict[str, Any]) -> str:
-    """Human-readable type from a Pydantic JSON-schema property."""
+    """Human-readable type from a Pydantic JSON-schema property.
+
+    Enum fields (e.g. Grade = Literal["A", "B", "C", "D"]) list their
+    allowed values explicitly so the LLM never invents a translation.
+    """
+    enum = prop.get("enum")
+    if enum:
+        return "/".join(str(e) for e in enum)
     prop_type = prop.get("type")
     if prop_type == "array":
         items = prop.get("items", {})
@@ -79,6 +86,8 @@ def _schema_instruction(prompt: str) -> str:
             '（如 {"palette": "蓝色", "mood": "未来感"}），值不要用数组；'
             "creative_directions 是对象数组，每项含 hook/angle 等字符串字段。"
         )
+    if model is SupervisionOutput:
+        extra = " grade 字段必须是 A/B/C/D 单字母，不要中文，禁止任何解释文字，仅返回 JSON。"
     return f"\n\n你必须只输出一个 JSON 对象，且必须包含以下字段（注意类型）：{fields}。{extra}"
 
 
@@ -100,10 +109,12 @@ async def deepseek_llm_caller(
         {
             "role": "system",
             "content": (
-                "You are a strict JSON API for a Chinese media-planning pipeline. ALL text values inside the JSON object MUST be in Chinese. "
-                "Respond with ONLY a single valid JSON object matching the "
-                "requested schema. No markdown fences, no explanations, no "
-                "surrounding text."
+                "You are a strict JSON API for a Chinese media-planning pipeline. "
+                "Text values inside the JSON object MUST be in Chinese, EXCEPT enum "
+                "fields (e.g. grade, source) which must keep their exact allowed "
+                "value (single letter like A/B/C/D). Respond with ONLY a single "
+                "valid JSON object matching the requested schema. No markdown "
+                "fences, no explanations, no surrounding text."
             ),
         },
         {"role": "user", "content": prompt + _schema_instruction(prompt)},
