@@ -85,6 +85,34 @@ WORKFLOW_SPECS: dict[str, ComfyUIWorkflowSpec] = {
             "output_prefix": ("47", "filename_prefix"),
         },
     ),
+    "sdxl_img2img": ComfyUIWorkflowSpec(
+        workflow_type="sdxl_img2img",
+        filename="image_sdxl_img2img_api.json",
+        requires_image=True,
+        parameter_targets={
+            "input_image": ("2", "image"),
+            "prompt": ("3", "text"),
+            "negative_prompt": ("4", "text"),
+            "seed": ("6", "seed"),
+            "steps": ("6", "steps"),
+            "cfg": ("6", "cfg"),
+            "output_prefix": ("8", "filename_prefix"),
+        },
+    ),
+    "qwen_image_edit": ComfyUIWorkflowSpec(
+        workflow_type="qwen_image_edit",
+        filename="image_qwen_edit_api.json",
+        requires_image=True,
+        parameter_targets={
+            "input_image": ("92", "image"),
+            "prompt": ("6", "text"),
+            "negative_prompt": ("7", "text"),
+            "seed": ("3", "seed"),
+            "steps": ("3", "steps"),
+            "cfg": ("3", "cfg"),
+            "output_prefix": ("60", "filename_prefix"),
+        },
+    ),
 }
 
 _WORKFLOW_KEYS = {spec.workflow_key: spec for spec in WORKFLOW_SPECS.values()}

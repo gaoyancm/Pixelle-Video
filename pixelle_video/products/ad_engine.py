@@ -16,6 +16,7 @@ from pixelle_video.products.models import ProductBrief
 from pixelle_video.products.repository import ProductBriefRepository
 
 IMAGE_WORKFLOW = "image_default"
+IMG2IMG_WORKFLOW = "sdxl_img2img"  # requires_image=True (image-to-image)
 VIDEO_WORKFLOW = "a800_wan22_t2v_33f"
 I2V_WORKFLOW = "gpu_4090_wan21_i2v_33f"  # requires_image=True (first-frame I2V)
 CAPTION_EXECUTOR = "llm_caption"
@@ -56,11 +57,12 @@ class AdProductionEngine:
 
         tasks.append(
             {
-                "kind": "image",
-                "role": "main_image",
-                "workflow_type": IMAGE_WORKFLOW,
-                "workflow_key": "workflow.json",
-                "executor_kind": "comfyui",
+        "kind": "image",
+        "role": "main_image",
+        "workflow_type": IMG2IMG_WORKFLOW if reference_images else IMAGE_WORKFLOW,
+        "workflow_key": "workflow.json",
+        "executor_kind": "private_comfyui" if reference_images else "comfyui",
+        "reference_images": reference_images,
                 "prompt_hint": (
                     f"白色背景商品主图：{brief.product_name}；卖点："
                     f"{'、'.join(brief.selling_points_json or [])}"
@@ -70,11 +72,12 @@ class AdProductionEngine:
         for index in range(2):
             tasks.append(
                 {
-                    "kind": "image",
-                    "role": f"scene_image_{index + 1}",
-                    "workflow_type": IMAGE_WORKFLOW,
-                    "workflow_key": "workflow.json",
-                    "executor_kind": "comfyui",
+        "kind": "image",
+        "role": f"scene_image_{index + 1}",
+        "workflow_type": IMG2IMG_WORKFLOW if reference_images else IMAGE_WORKFLOW,
+        "workflow_key": "workflow.json",
+        "executor_kind": "private_comfyui" if reference_images else "comfyui",
+        "reference_images": reference_images,
                     "prompt_hint": (
                         f"使用场景图 {index + 1}：{brief.product_name} 在"
                         f"{brief.category or '典型'}场景中的使用"

@@ -29,7 +29,7 @@ from pixelle_video.media_assets.repository import AssetRepository
 from pixelle_video.media_jobs.models import Base
 from pixelle_video.media_jobs.repository import MediaJobRepository
 from pixelle_video.orchestration.repository import ContentPlanRepository
-from pixelle_video.products.ad_engine import I2V_WORKFLOW, AdProductionEngine
+from pixelle_video.products.ad_engine import I2V_WORKFLOW, IMG2IMG_WORKFLOW, AdProductionEngine
 from pixelle_video.products.brief_mapper import BriefMapper
 from pixelle_video.products.repository import ProductBriefRepository
 from pixelle_video.videos.repository import VideoScriptRepository
@@ -135,6 +135,9 @@ async def test_05_video_tasks_become_i2v_with_reference(product_env) -> None:
     for task in tasks:
         if task["kind"] == "video":
             assert task["workflow_type"] == I2V_WORKFLOW
+            assert task["reference_images"] == [asset_id]
+        elif task["kind"] == "image":
+            assert task["workflow_type"] == IMG2IMG_WORKFLOW
             assert task["reference_images"] == [asset_id]
         else:
             assert task.get("reference_images", []) == []
