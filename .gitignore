@@ -84,3 +84,8 @@ repositories/
 
 *.out
 probe08_e2e.py
+
+# Runtime artifacts (Phase 09)
+.pytest-tmp/
+.video-work/
+logs/

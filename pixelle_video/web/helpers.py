@@ -18,7 +18,7 @@ def _default_api_base_url() -> str:
 
 
 API_BASE_URL = os.environ.get("API_BASE_URL", _default_api_base_url()).rstrip("/")
-CLIENT_TIMEOUT = 120.0  # real DeepSeek takes 30-60 s
+CLIENT_TIMEOUT = 300.0  # real DeepSeek + full 04-E pipeline can exceed 120s
 
 
 def _safe_json(response: httpx.Response) -> Any:
