@@ -56,6 +56,7 @@ class VideoScript(Base):
     )
     script_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     prompt_version_id: Mapped[str | None] = mapped_column(String(64))
+    reference_image_id: Mapped[str | None] = mapped_column(String(36))
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="draft", server_default=text("'draft'")
     )

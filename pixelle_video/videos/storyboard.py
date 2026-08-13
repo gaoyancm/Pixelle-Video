@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from pixelle_video.media_jobs.contracts import MediaJobCreate
+from pixelle_video.media_jobs.contracts import MediaInputAsset, MediaJobCreate
 from pixelle_video.media_jobs.repository import MediaJobRepository
 from pixelle_video.videos.repository import VideoScriptRepository
 
 STOCK_KEYWORDS_TEMPLATE = "{{topic}} {{visual}}"  # placeholder for optional stock search
+I2V_WORKFLOW = "gpu_4090_wan21_i2v_33f"  # requires_image=True (first-frame I2V)
 
 
 class StoryboardEngine:
@@ -72,31 +73,39 @@ class StoryboardEngine:
         """Create one media job per storyboard frame and track progress."""
         script = await self._require(script_id)
         frames = (script.script_json or {}).get("storyboard", {}).get("frames", [])
+        reference_image_id = getattr(script, "reference_image_id", None)
         job_ids: dict[str, str] = {}
         for frame in frames:
             index = frame["index"]
             is_image = index % 3 != 0  # every third frame is a motion/video frame
+            input_assets = []
             workflow = self.video_workflow if not is_image else self.image_workflow
+            if not is_image and reference_image_id:
+                # A reference image turns a motion frame into first-frame I2V.
+                workflow = I2V_WORKFLOW
+                input_assets = [MediaInputAsset(asset_id=reference_image_id, role="input_image")]
             executor_kind = executor_kind_override or (
                 "private_comfyui" if not is_image else "comfyui"
             )
-            job = await self.job_repository.create_job(
-                MediaJobCreate(
-                    workflow_type=workflow,
-                    workflow_key="workflow.json",
-                    executor_kind=executor_kind,
-                    provider=executor_kind,
-                    node_id=None,
-                    input_json={
-                        "script_id": script_id,
-                        "frame_index": index,
-                        "prompt": frame.get("image_prompt") or frame.get("video_prompt", ""),
-                        "role": f"storyboard_frame_{index}",
-                    },
-                    input_assets_json=[],
-                    idempotency_key=f"{script_id}:frame:{index}",
-                )
+            create = MediaJobCreate(
+                workflow_type=workflow,
+                workflow_key="workflow.json",
+                executor_kind=executor_kind,
+                provider=executor_kind,
+                node_id=None,
+                input_json={
+                    "script_id": script_id,
+                    "frame_index": index,
+                    "prompt": frame.get("image_prompt") or frame.get("video_prompt", ""),
+                    "role": f"storyboard_frame_{index}",
+                },
+                input_assets_json=input_assets,
+                idempotency_key=f"{script_id}:frame:{index}",
             )
+            if input_assets:
+                job = await self.job_repository.create_job_with_assets(create)
+            else:
+                job = await self.job_repository.create_job(create)
             job_ids[str(index)] = job.job.job_id
             frame["generated_asset_id"] = job.job.job_id
             frame["status"] = "queued"

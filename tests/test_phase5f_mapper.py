@@ -74,13 +74,12 @@ async def test_mapper_establishes_plan_trace(env) -> None:
     assert f"[source_plan: {plan.id}]" in mapped["description"]
 
 
-async def test_mapper_carries_creative_directions(env) -> None:
+async def test_mapper_reserves_reference_images_for_real_imagery(env) -> None:
     _factory, _briefs, plan_repository, _service = env
     plan = await _make_plan(plan_repository)
     mapped = BriefMapper().map(plan)
-    meta = mapped["reference_images_json"][0]
-    assert meta["plan_id"] == plan.id
-    assert meta["creative_directions"][0]["angle"] == "品质感奢华风"
+    assert mapped["plan_id"] == plan.id
+    assert mapped["reference_images_json"] == []
 
 
 async def test_service_create_brief_from_plan(env) -> None:

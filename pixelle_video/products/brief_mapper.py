@@ -1,16 +1,14 @@
 """Phase 05-F A1: map a 04-E Content Plan onto a product brief.
 
-The product_briefs table has no meta_json column and the contract forbids
-new migrations, so the plan metadata (creative_directions + plan_id) is
-carried in the brief's reference_images_json as a tagged entry; the 05
-engines never read it as reference imagery.
+The plan linkage is carried by the brief's dedicated ``plan_id`` column
+(phase 10). ``reference_images_json`` is reserved for real reference imagery
+and is never used to stash plan metadata.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-PLAN_META_KEY = "plan_link"
 PLAN_ID_KEY = "plan_id"
 CREATIVE_DIRECTIONS_KEY = "creative_directions"
 
@@ -27,10 +25,6 @@ class BriefMapper:
         platforms = plan_json.get("platforms", [])
         if not platforms and plan.intent == "product_ad":
             platforms = ["etsy", "tiktok"]
-        meta = {
-            PLAN_ID_KEY: plan.id,
-            CREATIVE_DIRECTIONS_KEY: plan_json.get("creative_directions", []),
-        }
         return {
             "project_id": plan.project_id,
             "product_name": self._product_name(summary, plan.request_text),
@@ -38,7 +32,7 @@ class BriefMapper:
             "selling_points_json": existing_points,
             "target_audience": plan_json.get("target_audience"),
             "platforms_json": platforms,
-            "reference_images_json": [meta],
+            "reference_images_json": [],
             "plan_id": plan.id,
         }
 
@@ -54,7 +48,6 @@ class BriefMapper:
 
     @staticmethod
     def plan_link_from_brief(brief) -> dict[str, Any] | None:
-        for entry in brief.reference_images_json or []:
-            if isinstance(entry, dict) and entry.get(PLAN_ID_KEY):
-                return entry
+        if getattr(brief, "plan_id", None):
+            return {PLAN_ID_KEY: brief.plan_id}
         return None

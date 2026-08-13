@@ -62,6 +62,7 @@ class ProductApplicationService:
             brand_profile_id=body.brand_profile_id,
             platforms=body.platforms,
             reference_images=body.reference_images,
+            plan_id=getattr(body, "plan_id", None),
         )
 
     async def list(self, project_id: str | None, status: str | None, limit: int, offset: int):
@@ -86,7 +87,7 @@ class ProductApplicationService:
 
     # --- A1 generate ideas (via 04-A prompt compiler) ------------------------------
 
-    async def create_brief_from_plan(self, plan_id: str) -> dict[str, Any]:
+    async def create_brief_from_plan(self, plan_id: str, reference_images=None) -> dict[str, Any]:
         """A1: auto-map a 04-E Content Plan onto a product brief."""
         if self.plan_repository is None:
             raise RuntimeError("plan repository not configured")
@@ -104,7 +105,10 @@ class ProductApplicationService:
             selling_points=mapped["selling_points_json"],
             target_audience=mapped["target_audience"],
             platforms=mapped["platforms_json"],
-            reference_images=mapped["reference_images_json"],
+            reference_images=reference_images
+            if reference_images
+            else mapped["reference_images_json"],
+            plan_id=mapped["plan_id"],
         )
         return {
             "brief_id": brief.id,
@@ -114,6 +118,7 @@ class ProductApplicationService:
             "target_audience": brief.target_audience,
             "selling_points": brief.selling_points_json,
             "platforms": brief.platforms_json,
+            "reference_images": brief.reference_images_json,
         }
 
     async def get_plan_for_brief(self, brief_id: str) -> dict[str, Any] | None:
@@ -121,14 +126,10 @@ class ProductApplicationService:
         brief = await self._require(brief_id)
         if self.plan_repository is None:
             return None
-        meta = None
-        for entry in brief.reference_images_json or []:
-            if isinstance(entry, dict) and entry.get("plan_id"):
-                meta = entry
-                break
-        if meta is None:
+        plan_id = getattr(brief, "plan_id", None)
+        if not plan_id:
             return None
-        plan = await self.plan_repository.get_plan(meta["plan_id"])
+        plan = await self.plan_repository.get_plan(plan_id)
         if plan is None:
             return None
         return {
@@ -163,12 +164,12 @@ class ProductApplicationService:
 
     async def _generate_ideas_via_agent(self, brief) -> dict[str, Any]:
         """A2: route copy generation through the 04-E copywriter sub-agent."""
-        meta = None
-        for entry in brief.reference_images_json or []:
-            if isinstance(entry, dict) and entry.get("plan_id"):
-                meta = entry
-                break
-        creative_directions = (meta or {}).get("creative_directions", [])
+        creative_directions = []
+        plan_id = getattr(brief, "plan_id", None)
+        if plan_id and self.plan_repository is not None:
+            plan = await self.plan_repository.get_plan(plan_id)
+            if plan is not None:
+                creative_directions = (plan.plan_json or {}).get("creative_directions", [])
         direction_hint = ""
         if creative_directions:
             direction_hint = "；".join(

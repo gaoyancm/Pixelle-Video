@@ -27,7 +27,7 @@ from pixelle_video.media_jobs.models import Base
 
 PROJECT_ROOT = Path(__file__).parents[1]
 PREVIOUS_REVISION = "0003_add_media_assets"
-HEAD_REVISION = "0016_add_content_plans"
+HEAD_REVISION = "0017_add_phase10_reference"
 MANAGEMENT_TABLES = {
     "projects",
     "production_batches",
@@ -57,7 +57,7 @@ def test_phase3a_migration_has_one_head_and_follows_0003():
     script = ScriptDirectory.from_config(config(Path("unused.db")))
     assert script.get_heads() == [HEAD_REVISION]
     revision = script.get_revision(HEAD_REVISION)
-    assert revision is not None and revision.down_revision == "0015_add_anime_series"
+    assert revision is not None and revision.down_revision == "0016_add_content_plans"
 
 
 def test_empty_upgrade_creates_six_tables_priority_constraints_and_indexes(tmp_path):

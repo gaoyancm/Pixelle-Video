@@ -23,11 +23,16 @@ class ScriptGenerateRequest(StrictModel):
     target_duration: int = Field(default=60, ge=5, le=600)
     platform: str = Field(default="tiktok", max_length=16)
     project_id: str | None = Field(default=None, max_length=64)
+    reference_image_id: str | None = Field(default=None, max_length=64)
 
 
 class ScriptUpdateRequest(StrictModel):
     script_json: dict[str, Any] | None = None
     status: ScriptStatus | None = None
+
+
+class ScriptFromPlanRequest(StrictModel):
+    reference_image_id: str | None = Field(default=None, max_length=64)
 
 
 class ScriptResponse(StrictModel):
@@ -39,6 +44,7 @@ class ScriptResponse(StrictModel):
     platform: str
     script_json: dict[str, Any] | None
     prompt_version_id: str | None
+    reference_image_id: str | None
     status: str
     created_at: datetime
     updated_at: datetime

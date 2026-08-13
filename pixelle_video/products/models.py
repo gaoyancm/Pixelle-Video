@@ -47,6 +47,7 @@ class ProductBrief(Base):
         JSON, nullable=False, default=list, server_default=text("'[]'")
     )
     reference_images_json: Mapped[list[str] | None] = mapped_column(JSON)
+    plan_id: Mapped[str | None] = mapped_column(String(36))
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="draft", server_default=text("'draft'")
     )

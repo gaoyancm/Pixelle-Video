@@ -8,6 +8,7 @@ from pixelle_video.web.helpers import (
     api_get,
     api_post,
     render_outcome,
+    upload_image_file,
 )
 
 HINT = "输入故事和角色，如：一个叫李逍遥的剑客闯荡武林，5 集连续剧"
@@ -107,8 +108,18 @@ def _render_step_characters() -> None:
     c1, c2 = st.columns([3, 1])
     new_name = c1.text_input("角色名称", key="anime_new_char")
     role = c2.selectbox("角色类型", ["主角", "配角", "反派", "NPC"], key="anime_new_role")
+    ref_file = st.file_uploader(
+        "角色参考图（可选）",
+        type=["png", "jpg", "jpeg", "webp"],
+        key="anime_new_ref",
+    )
     if st.button("＋ 添加角色") and new_name.strip():
-        chars.append({"name": new_name.strip(), "role": role, "id": f"char_{len(chars)}"})
+        char = {"name": new_name.strip(), "role": role, "id": f"char_{len(chars)}"}
+        if ref_file is not None:
+            asset_id = upload_image_file(ref_file)
+            if asset_id:
+                char["reference_images"] = [{"asset_id": asset_id}]
+        chars.append(char)
         st.session_state["_anime_chars"] = chars
         st.rerun()
 
@@ -120,6 +131,8 @@ def _render_step_characters() -> None:
             chars.pop(i)
             st.session_state["_anime_chars"] = chars
             st.rerun()
+        if c.get("reference_images"):
+            st.caption(f"🖼 参考图已上传：{c['reference_images'][0]['asset_id'][:8]}…")
 
     if chars:
         if st.button("确认角色，进入分镜生成 →", type="primary"):

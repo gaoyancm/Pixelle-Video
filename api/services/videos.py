@@ -57,6 +57,7 @@ class VideoApplicationService:
             target_duration=body.target_duration,
             platform=body.platform,
             project_id=body.project_id,
+            reference_image_id=getattr(body, "reference_image_id", None),
         )
 
     async def get_script(self, script_id: str):
@@ -73,7 +74,9 @@ class VideoApplicationService:
 
     # --- S2 ---------------------------------------------------------------------
 
-    async def create_script_from_plan(self, plan_id: str) -> dict[str, Any]:
+    async def create_script_from_plan(
+        self, plan_id: str, reference_image_id: str | None = None
+    ) -> dict[str, Any]:
         """B1: auto-map a 04-E Content Plan onto a video script."""
         if self.plan_repository is None:
             raise RuntimeError("plan repository not configured")
@@ -93,6 +96,7 @@ class VideoApplicationService:
             target_duration=mapped["target_duration"],
             language=mapped["language"],
             project_id=plan.project_id,
+            reference_image_id=reference_image_id,
         )
         return {
             "script_id": script.id,
@@ -100,6 +104,7 @@ class VideoApplicationService:
             "topic": script.topic,
             "platform": script.platform,
             "target_duration": script.target_duration,
+            "reference_image_id": script.reference_image_id,
         }
 
     async def get_plan_for_script(self, script_id: str) -> dict[str, Any] | None:

@@ -25,12 +25,20 @@ def _make_image(path: Path, size: tuple[int, int] = (2000, 1200)) -> Path:
     return path
 
 
-def test_specs_cover_five_platforms() -> None:
-    assert set(PLATFORM_SPECS) == {"etsy", "tiktok", "instagram", "meta", "youtube_shorts"}
+def test_specs_cover_six_platforms() -> None:
+    assert set(PLATFORM_SPECS) == {
+        "etsy",
+        "tiktok",
+        "instagram",
+        "meta",
+        "xiaohongshu",
+        "youtube_shorts",
+    }
     assert PLATFORM_SPECS["etsy"]["image_size"] == (2700, 2025)
     assert PLATFORM_SPECS["tiktok"]["video_size"] == (1080, 1920)
     assert PLATFORM_SPECS["instagram"]["image_size"] == (1080, 1080)
     assert PLATFORM_SPECS["meta"]["image_size"] == (1200, 628)
+    assert PLATFORM_SPECS["xiaohongshu"]["image_size"] == (1080, 1440)
     assert PLATFORM_SPECS["youtube_shorts"]["video_size"] == (1920, 1080)
 
 

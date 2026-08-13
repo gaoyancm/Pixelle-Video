@@ -21,6 +21,7 @@ from api.schemas.products import (
     PackageResponse,
     PackageStatusResponse,
     ProductBriefCreate,
+    ProductBriefFromPlanRequest,
     ProductBriefList,
     ProductBriefResponse,
     ProductBriefUpdate,
@@ -49,6 +50,7 @@ def _brief_view(brief) -> dict:
         "brand_profile_id": brief.brand_profile_id,
         "platforms": brief.platforms_json,
         "reference_images": brief.reference_images_json,
+        "plan_id": brief.plan_id,
         "status": brief.status,
         "created_at": brief.created_at,
         "updated_at": brief.updated_at,
@@ -73,8 +75,7 @@ class ProductRoute(APIRoute):
             except SQLAlchemyError:
                 return _error(503, "service_unavailable", "Product storage is unavailable.")
             except Exception:
-                import traceback; traceback.print_exc()
-                logger.error("Unhandled product API error")
+                logger.error("Unhandled product API error", exc_info=True)
                 return _error(500, "internal_error", "An internal error occurred.")
 
         return handler
@@ -121,8 +122,14 @@ async def generate_ideas(brief_id: str, service: ProductServiceDep):
 
 
 @router.post("/briefs/from-plan/{plan_id}", status_code=201)
-async def create_brief_from_plan(plan_id: str, service: ProductServiceDep):
-    return await service.create_brief_from_plan(plan_id)
+async def create_brief_from_plan(
+    plan_id: str,
+    service: ProductServiceDep,
+    body: ProductBriefFromPlanRequest | None = None,
+):
+    return await service.create_brief_from_plan(
+        plan_id, reference_images=(body.reference_images if body else None)
+    )
 
 
 @router.get("/briefs/{brief_id}/plan")

@@ -25,6 +25,11 @@ class ProductBriefCreate(StrictModel):
     brand_profile_id: str | None = Field(default=None, max_length=64)
     platforms: list[PlatformName] = Field(default_factory=list, max_length=8)
     reference_images: list[str] = Field(default_factory=list, max_length=20)
+    plan_id: str | None = Field(default=None, max_length=64)
+
+
+class ProductBriefFromPlanRequest(StrictModel):
+    reference_images: list[str] = Field(default_factory=list, max_length=20)
 
 
 class ProductBriefUpdate(StrictModel):
@@ -48,6 +53,7 @@ class ProductBriefResponse(StrictModel):
     brand_profile_id: str | None
     platforms: list[str]
     reference_images: list[str] | None
+    plan_id: str | None
     status: str
     created_at: datetime
     updated_at: datetime

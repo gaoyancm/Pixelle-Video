@@ -18,6 +18,7 @@ from api.schemas.videos import (
     ComposeStatusResponse,
     ConfirmResponse,
     GenerateAssetsResponse,
+    ScriptFromPlanRequest,
     ScriptGenerateRequest,
     ScriptResponse,
     ScriptUpdateRequest,
@@ -42,6 +43,7 @@ def _script_view(script) -> dict:
         "platform": script.platform,
         "script_json": script.script_json,
         "prompt_version_id": script.prompt_version_id,
+        "reference_image_id": script.reference_image_id,
         "status": script.status,
         "created_at": script.created_at,
         "updated_at": script.updated_at,
@@ -97,8 +99,14 @@ async def confirm_script(script_id: str, service: VideoServiceDep):
 
 
 @router.post("/scripts/from-plan/{plan_id}", status_code=201)
-async def create_script_from_plan(plan_id: str, service: VideoServiceDep):
-    return await service.create_script_from_plan(plan_id)
+async def create_script_from_plan(
+    plan_id: str,
+    service: VideoServiceDep,
+    body: ScriptFromPlanRequest | None = None,
+):
+    return await service.create_script_from_plan(
+        plan_id, reference_image_id=(body.reference_image_id if body else None)
+    )
 
 
 @router.get("/scripts/{script_id}/plan")

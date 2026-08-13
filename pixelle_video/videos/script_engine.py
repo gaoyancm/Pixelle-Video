@@ -45,6 +45,7 @@ class ScriptEngine:
         platform: str = "tiktok",
         project_id: str | None = None,
         script_id: str | None = None,
+        reference_image_id: str | None = None,
     ) -> dict[str, Any]:
         """Generate, persist, and return a structured script."""
         script_json = self._build_script(
@@ -62,6 +63,7 @@ class ScriptEngine:
             script_json=script_json,
             prompt_version_id="pt-short-video-script",
             script_id=script_id,
+            reference_image_id=reference_image_id,
         )
         return {
             "id": script.id,
@@ -72,6 +74,7 @@ class ScriptEngine:
             "status": script.status,
             "script_json": script.script_json,
             "prompt_version_id": script.prompt_version_id,
+            "reference_image_id": script.reference_image_id,
         }
 
     def _build_script(

@@ -9,6 +9,7 @@ from pixelle_video.web.helpers import (
     render_confirm_and_route,
     render_outcome,
     render_plan_preview,
+    render_reference_image_uploader,
     run_products,
 )
 
@@ -18,6 +19,8 @@ HINT = "输入产品名和平台，如：手工皮具钱包，Etsy + TikTok"
 def render(reset_outcome) -> None:
     st.title("🛍 商品广告")
     st.caption("输入产品信息 → AI 生成广告方案 → 自动出图")
+
+    render_reference_image_uploader("products_ref_image")
 
     request = st.text_area(
         "产品描述",

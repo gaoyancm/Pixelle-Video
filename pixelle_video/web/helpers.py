@@ -69,6 +69,53 @@ def api_get(path: str) -> dict[str, Any] | None:
         return None
 
 
+def upload_image_file(uploaded) -> str | None:
+    """Upload an image to the media-assets API and return its asset id."""
+    try:
+        with httpx.Client(base_url=API_BASE_URL, timeout=CLIENT_TIMEOUT) as client:
+            response = client.post(
+                "/api/assets",
+                files={
+                    "file": (
+                        uploaded.name or "upload.png",
+                        uploaded.getvalue(),
+                        uploaded.type or "application/octet-stream",
+                    )
+                },
+            )
+        payload = _safe_json(response)
+        if response.status_code >= 400:
+            err = (payload or {}).get("error", {})
+            msg = (
+                err.get("message", f"HTTP {response.status_code}")
+                if isinstance(err, dict)
+                else str(err)
+            )
+            st.error(f"图片上传失败：{msg}")
+            return None
+        return payload.get("asset_id") if isinstance(payload, dict) else None
+    except httpx.HTTPError as exc:
+        st.error(f"无法连接 API 服务（{API_BASE_URL}）：{exc}")
+        return None
+
+
+def render_reference_image_uploader(key: str) -> None:
+    """Render a reference-image uploader; stores the asset id on success."""
+    uploaded = st.file_uploader(
+        "参考图（可选 · 图生图 / 图生视频）",
+        type=["png", "jpg", "jpeg", "webp"],
+        key=key,
+    )
+    if uploaded is not None:
+        st.image(uploaded, caption="参考图预览", width=240)
+        if st.session_state.get("_reference_image_id") is None:
+            with st.spinner("上传参考图…"):
+                asset_id = upload_image_file(uploaded)
+            if asset_id:
+                st.session_state["_reference_image_id"] = asset_id
+        st.caption(f"参考图已上传：{st.session_state.get('_reference_image_id', '')[:8]}…")
+
+
 def poll_progress(
     path: str,
     done_keys: tuple[str, ...],
@@ -189,7 +236,9 @@ def render_outcome() -> None:
 
 def run_products(plan_id: str, progress_bar) -> dict[str, Any] | None:
     progress_bar.progress(0.05, "创建 Brief（05）")
-    brief = api_post(f"/api/products/briefs/from-plan/{plan_id}")
+    ref_id = st.session_state.get("_reference_image_id")
+    body = {"reference_images": [ref_id]} if ref_id else None
+    brief = api_post(f"/api/products/briefs/from-plan/{plan_id}", body)
     if brief is None:
         return None
     brief_id = brief["brief_id"]
@@ -212,7 +261,9 @@ def run_products(plan_id: str, progress_bar) -> dict[str, Any] | None:
 
 def run_videos(plan_id: str, progress_bar) -> dict[str, Any] | None:
     progress_bar.progress(0.05, "创建脚本（06）")
-    script = api_post(f"/api/videos/scripts/from-plan/{plan_id}")
+    ref_id = st.session_state.get("_reference_image_id")
+    body = {"reference_image_id": ref_id} if ref_id else None
+    script = api_post(f"/api/videos/scripts/from-plan/{plan_id}", body)
     if script is None:
         return None
     script_id = script["script_id"]

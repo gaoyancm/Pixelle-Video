@@ -31,6 +31,7 @@ class ProductBriefRepository:
         brand_profile_id: str | None = None,
         platforms: Sequence[str] | None = None,
         reference_images: Sequence[str] | None = None,
+        plan_id: str | None = None,
         status: str = "draft",
         brief_id: str | None = None,
     ) -> ProductBrief:
@@ -45,6 +46,7 @@ class ProductBriefRepository:
             brand_profile_id=brand_profile_id,
             platforms_json=list(platforms or []),
             reference_images_json=list(reference_images) if reference_images else None,
+            plan_id=plan_id,
             status=status,
         )
         async with self._session_factory() as session:

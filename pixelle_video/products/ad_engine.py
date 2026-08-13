@@ -10,13 +10,14 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from pixelle_video.management.repository import ManagementRepository
-from pixelle_video.media_jobs.contracts import MediaJobCreate
+from pixelle_video.media_jobs.contracts import MediaInputAsset, MediaJobCreate
 from pixelle_video.media_jobs.repository import MediaJobRepository
 from pixelle_video.products.models import ProductBrief
 from pixelle_video.products.repository import ProductBriefRepository
 
 IMAGE_WORKFLOW = "image_default"
 VIDEO_WORKFLOW = "a800_wan22_t2v_33f"
+I2V_WORKFLOW = "gpu_4090_wan21_i2v_33f"  # requires_image=True (first-frame I2V)
 CAPTION_EXECUTOR = "llm_caption"
 
 
@@ -50,6 +51,7 @@ class AdProductionEngine:
         platforms = [p for p in (brief.platforms_json or []) if p]
         if not platforms:
             platforms = ["etsy", "tiktok"]
+        reference_images = [r for r in (brief.reference_images_json or []) if isinstance(r, str)]
         tasks: list[dict[str, Any]] = []
 
         tasks.append(
@@ -84,10 +86,11 @@ class AdProductionEngine:
                 {
                     "kind": "video",
                     "role": f"ad_video_{platform}",
-                    "workflow_type": VIDEO_WORKFLOW,
+                    "workflow_type": I2V_WORKFLOW if reference_images else VIDEO_WORKFLOW,
                     "workflow_key": "workflow.json",
                     "executor_kind": "private_comfyui",
                     "platform": platform,
+                    "reference_images": reference_images,
                     "prompt_hint": (
                         f"{platform} 广告短视频：{brief.product_name}，"
                         f"受众 {brief.target_audience or '广泛'}，时长 15-30 秒"
@@ -146,23 +149,29 @@ class AdProductionEngine:
         created: dict[str, list[str]] = {"image": [], "video": [], "caption": []}
         for task in tasks:
             executor_kind = executor_kind_override or task["executor_kind"]
-            job = await self.job_repository.create_job(
-                MediaJobCreate(
-                    workflow_type=task["workflow_type"],
-                    workflow_key=task["workflow_key"],
-                    executor_kind=executor_kind,
-                    provider=executor_kind,
-                    node_id=None,
-                    input_json={
-                        "role": task["role"],
-                        "brief_id": brief_id,
-                        "product_name": brief.product_name,
-                        "prompt_hint": task["prompt_hint"],
-                    },
-                    input_assets_json=[],
-                    idempotency_key=f"{brief_id}:{task['role']}",
-                )
+            input_assets = [
+                MediaInputAsset(asset_id=asset_id, role="input_image")
+                for asset_id in task.get("reference_images") or []
+            ]
+            create = MediaJobCreate(
+                workflow_type=task["workflow_type"],
+                workflow_key=task["workflow_key"],
+                executor_kind=executor_kind,
+                provider=executor_kind,
+                node_id=None,
+                input_json={
+                    "role": task["role"],
+                    "brief_id": brief_id,
+                    "product_name": brief.product_name,
+                    "prompt_hint": task["prompt_hint"],
+                },
+                input_assets_json=input_assets,
+                idempotency_key=f"{brief_id}:{task['role']}",
             )
+            if input_assets:
+                job = await self.job_repository.create_job_with_assets(create)
+            else:
+                job = await self.job_repository.create_job(create)
             created[task["kind"]].append(job.job.job_id)
 
         await self.brief_repository.update_status(brief_id, "processing")

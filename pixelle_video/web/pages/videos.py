@@ -9,6 +9,7 @@ from pixelle_video.web.helpers import (
     render_confirm_and_route,
     render_outcome,
     render_plan_preview,
+    render_reference_image_uploader,
     run_videos,
 )
 
@@ -18,6 +19,8 @@ HINT = "输入选题和时长，如：人工智能改变日常生活的 5 种方
 def render(reset_outcome) -> None:
     st.title("🎬 短视频")
     st.caption("输入选题 → AI 生成脚本+分镜 → 自动合成视频")
+
+    render_reference_image_uploader("videos_ref_image")
 
     request = st.text_area(
         "视频选题",

@@ -29,6 +29,7 @@ class VideoScriptRepository:
         project_id: str | None = None,
         script_json: dict[str, Any] | None = None,
         prompt_version_id: str | None = None,
+        reference_image_id: str | None = None,
         status: str = "draft",
         script_id: str | None = None,
     ) -> VideoScript:
@@ -41,6 +42,7 @@ class VideoScriptRepository:
             platform=platform,
             script_json=script_json,
             prompt_version_id=prompt_version_id,
+            reference_image_id=reference_image_id,
             status=status,
         )
         async with self._session_factory() as session:

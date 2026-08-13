@@ -53,6 +53,14 @@ async def test_generate_ideas_with_copywriter_agent(env) -> None:
 
 async def test_generate_ideas_agent_uses_creative_directions(env) -> None:
     _factory, repository, service = env
+    from pixelle_video.orchestration.repository import ContentPlanRepository
+
+    service.plan_repository = ContentPlanRepository(_factory)
+    plan = await service.plan_repository.create_plan(
+        request_text="手工皮具钱包",
+        intent="product_ad",
+        plan_json={"creative_directions": [{"angle": "奢华风"}]},
+    )
     captured: list[str] = []
 
     async def spy_llm(text: str) -> str:
@@ -60,11 +68,7 @@ async def test_generate_ideas_agent_uses_creative_directions(env) -> None:
         return await _mock_copywriter_llm(text)
 
     service.copywriter_agent = await _agent_with(spy_llm)
-    brief = await repository.create_brief(
-        **_brief_body(
-            reference_images=[{"plan_id": "plan-1", "creative_directions": [{"angle": "奢华风"}]}]
-        )
-    )
+    brief = await repository.create_brief(**_brief_body(plan_id=plan.id))
     await service.generate_ideas(brief.id)
     assert "奢华风" in captured[0]
 
@@ -94,12 +98,18 @@ async def test_generate_ideas_agent_still_passes_04a_compiler(env) -> None:
     assert payload["ideas"][0]["hook"] == "AI Hook 1"
 
 
-async def test_generate_ideas_agent_uses_plan_meta_when_present(env) -> None:
+async def test_generate_ideas_agent_uses_plan_link(env) -> None:
     _factory, repository, service = env
-    service.copywriter_agent = await _agent_with(_mock_copywriter_llm)
-    brief = await repository.create_brief(
-        **_brief_body(reference_images=[{"plan_id": "plan-x", "creative_directions": []}])
+    from pixelle_video.orchestration.repository import ContentPlanRepository
+
+    service.plan_repository = ContentPlanRepository(_factory)
+    plan = await service.plan_repository.create_plan(
+        request_text="手工皮具钱包",
+        intent="product_ad",
+        plan_json={"creative_directions": []},
     )
+    service.copywriter_agent = await _agent_with(_mock_copywriter_llm)
+    brief = await repository.create_brief(**_brief_body(plan_id=plan.id))
     payload = await service.generate_ideas(brief.id)
     assert payload["source"] == "04-e-copywriter"
 
