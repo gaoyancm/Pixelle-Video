@@ -34,7 +34,9 @@ class OrchestrationService:
     # --- L1 ---------------------------------------------------------------------
 
     async def create_plan(self, body) -> Any:
-        intent = await self.intent_router.classify(body.request_text)
+        intent = body.intent or await self.intent_router.classify(body.request_text)
+        if intent not in {"product_ad", "short_video", "animation", "unknown"}:
+            intent = "unknown"
         plan_json = self.intent_router.build_initial_plan(body.request_text, intent)
         return await self.repository.create_plan(
             request_text=body.request_text,

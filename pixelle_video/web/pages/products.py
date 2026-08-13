@@ -31,7 +31,7 @@ def render(reset_outcome) -> None:
         if request.strip():
             st.session_state["_request"] = request.strip()
             with st.spinner("04-E 编排生成广告方案…"):
-                payload = create_and_preview()
+                payload = create_and_preview(intent_hint="product_ad")
             if payload is not None:
                 render_plan_preview(payload)
 

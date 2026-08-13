@@ -101,9 +101,17 @@ def poll_progress(
     return None
 
 
-def create_and_preview() -> dict[str, Any] | None:
-    """Create a plan through 04-E, generate it, and return the approval summary."""
-    created = api_post("/api/orchestration/plans", {"request_text": st.session_state["_request"]})
+def create_and_preview(intent_hint: str | None = None) -> dict[str, Any] | None:
+    """Create a plan through 04-E, generate it, and return the approval summary.
+
+    ``intent_hint`` forces the product line (product_ad/short_video/animation)
+    for sub-pages that already know their intent; the homepage passes None to
+    let 04-E classify from natural language.
+    """
+    body = {"request_text": st.session_state["_request"]}
+    if intent_hint:
+        body["intent"] = intent_hint
+    created = api_post("/api/orchestration/plans", body)
     if created is None:
         return None
     plan_id = created.get("id")
@@ -113,7 +121,7 @@ def create_and_preview() -> dict[str, Any] | None:
     summary = api_get(f"/api/orchestration/plans/{plan_id}/approval-summary")
     return {
         "plan_id": plan_id,
-        "intent": created.get("intent", "unknown"),
+        "intent": created.get("intent", intent_hint or "unknown"),
         "status": created.get("status", "draft"),
         "summary": summary or {},
     }

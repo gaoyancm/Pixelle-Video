@@ -20,6 +20,11 @@ class StrictModel(BaseModel):
 class PlanCreateRequest(StrictModel):
     request_text: str = Field(min_length=1, max_length=20_000)
     project_id: str | None = Field(default=None, max_length=64)
+    intent: str | None = Field(
+        default=None,
+        description="Optional intent override (product_ad/short_video/animation). "
+        "When set, skips keyword classification.",
+    )
 
 
 class PlanResponse(StrictModel):

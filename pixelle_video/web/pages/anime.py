@@ -62,7 +62,10 @@ def _render_step_episode_plan() -> None:
         if request.strip():
             st.session_state["_request"] = request.strip()
             with st.spinner("04-E 生成剧集规划…"):
-                plan = api_post("/api/orchestration/plans", {"request_text": request.strip()})
+                plan = api_post(
+                    "/api/orchestration/plans",
+                    {"request_text": request.strip(), "intent": "animation"},
+                )
                 if plan:
                     api_post(f"/api/orchestration/plans/{plan['id']}/generate")
                     episode = api_post(

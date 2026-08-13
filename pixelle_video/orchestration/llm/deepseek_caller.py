@@ -30,7 +30,15 @@ from pixelle_video.orchestration.contracts import (
 
 DEFAULT_TIMEOUT = 60.0
 MAX_TOKENS = 800  # hard cap: single call cost stays far below ¥0.50
+EPISODE_MAX_TOKENS = 2400  # multi-season structure needs a much longer JSON
 MAX_TURNS = 3  # 1 initial + 2 follow-ups for reasoning models
+
+
+def _effective_max_tokens(prompt: str) -> int:
+    """The episode planner emits a deeply nested multi-season JSON that
+    overflows the default cap; give it more room while other sub-agents
+    stay under the ¥0.50 budget."""
+    return EPISODE_MAX_TOKENS if "规划多集结构" in prompt else MAX_TOKENS
 
 
 def _json_type(prop: dict[str, Any]) -> str:
@@ -125,7 +133,9 @@ async def deepseek_llm_caller(
                 payload: dict[str, Any] = {
                     "model": model,
                     "messages": messages,
-                    "max_tokens": max_tokens,
+                    "max_tokens": max_tokens
+                    if max_tokens != MAX_TOKENS
+                    else _effective_max_tokens(prompt),
                     "temperature": 0.3,
                 }
                 try:

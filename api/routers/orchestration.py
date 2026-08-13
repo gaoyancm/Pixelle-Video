@@ -60,9 +60,14 @@ class OrchestrationRoute(APIRoute):
                 return _error(402, "budget_exceeded", str(exc))
             except PipelineError as exc:
                 return _error(409, "pipeline_failed", str(exc))
+            except ValueError as exc:
+                return _error(422, "invalid_request", str(exc))
             except SQLAlchemyError:
                 return _error(503, "service_unavailable", "Orchestration storage is unavailable.")
             except Exception:
+                import traceback
+
+                traceback.print_exc()
                 logger.error("Unhandled orchestration API error")
                 return _error(500, "internal_error", "An internal error occurred.")
 
