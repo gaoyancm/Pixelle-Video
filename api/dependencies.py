@@ -33,6 +33,7 @@ from api.services.prompts import PromptApplicationService
 from api.services.qc import QCApplicationService
 from api.services.videos import VideoApplicationService
 from pixelle_video.anime.consistency import ConsistencyGuard
+from pixelle_video.anime.packager import AnimePackager
 from pixelle_video.anime.repository import AnimeRepository
 from pixelle_video.anime.shot_engine import ShotProductionEngine
 from pixelle_video.audit import AuditRepository
@@ -67,7 +68,6 @@ from pixelle_video.qc.executor import QCExecutor
 from pixelle_video.qc.repository import QCRepository
 from pixelle_video.service import PixelleVideoCore
 from pixelle_video.services.comfyui_adapter import select_comfyui_node
-from pixelle_video.services.tts_service import TTSService
 from pixelle_video.videos.compose import Composer
 from pixelle_video.videos.packager import VideoPackager
 from pixelle_video.videos.repository import VideoScriptRepository
@@ -363,10 +363,14 @@ async def get_product_service() -> ProductApplicationService:
         management_repository = ManagementRepository(sessions)
         brief_repository = ProductBriefRepository(sessions)
         asset_repository = AssetRepository(sessions)
+        asset_service = await get_media_asset_service()
         ad_engine = AdProductionEngine(
             brief_repository,
             management_repository,
             job_repository,
+            node_selector=lambda workflow_type: select_comfyui_node(
+                manager.config.comfyui.nodes, workflow_type
+            ).id,
         )
         qc_executor = QCExecutor(
             QCRepository(sessions),
@@ -398,6 +402,7 @@ async def get_product_service() -> ProductApplicationService:
             copywriter_agent=copywriter_agent,
             plan_repository=plan_repository,
             brief_mapper=BriefMapper(),
+            asset_path_resolver=lambda asset: asset_service.store.local_path(asset.object_key),
         )
     return _product_service
 
@@ -415,11 +420,14 @@ async def get_video_service() -> VideoApplicationService:
         script_repository = VideoScriptRepository(sessions)
         job_repository = MediaJobRepository(sessions)
         asset_repository = AssetRepository(sessions)
-        # TTS runner: the repository's workflow-based TTS service (injected,
-        # not invoked during wiring).
+        # TTS runner: reuse the initialized core service so ComfyUI mode has
+        # the shared ComfyKit client and the configured 4090 endpoint.
         tts_runner = None
         try:
-            tts_service = TTSService(manager.config.to_dict())
+            core = await get_pixelle_video()
+            tts_service = core.tts
+            if tts_service is None:
+                raise RuntimeError("TTS service was not initialized")
             tts_runner = tts_service.__call__
         except Exception:
             logger.warning("TTS service unavailable for video pipeline")
@@ -449,7 +457,13 @@ async def get_video_service() -> VideoApplicationService:
         _video_service = VideoApplicationService(
             script_repository,
             script_engine=ScriptEngine(script_repository, prompt_compiler=compile),
-            storyboard_engine=StoryboardEngine(script_repository, job_repository),
+            storyboard_engine=StoryboardEngine(
+                script_repository,
+                job_repository,
+                node_selector=lambda workflow_type: select_comfyui_node(
+                    manager.config.comfyui.nodes, workflow_type
+                ).id,
+            ),
             composer=composer,
             packager=VideoPackager(script_repository, exports_root="exports"),
             job_repository=job_repository,
@@ -481,6 +495,8 @@ async def get_anime_service() -> AnimeApplicationService:
         sessions = _media_jobs_database.connect()
         anime_repository = AnimeRepository(sessions)
         job_repository = MediaJobRepository(sessions)
+        anime_asset_repository = AssetRepository(sessions)
+        anime_asset_service = await get_media_asset_service()
         plan_repository = ContentPlanRepository(sessions)
         llm_caller = _resolve_llm_caller(manager)
         storyboard_planner_anime = None
@@ -495,12 +511,26 @@ async def get_anime_service() -> AnimeApplicationService:
             job_repository=job_repository,
             prompt_compiler=compile,
             shot_engine=ShotProductionEngine(
-                anime_repository, job_repository, prompt_compiler=compile
+                anime_repository,
+                job_repository,
+                prompt_compiler=compile,
+                node_selector=lambda workflow_type: select_comfyui_node(
+                    manager.config.comfyui.nodes, workflow_type
+                ).id,
+                asset_repository=anime_asset_repository,
             ),
             consistency_guard=ConsistencyGuard(anime_repository),
             storyboard_planner=storyboard_planner_anime,
             plan_repository=plan_repository,
             consistency_verifier=ConsistencyVerifier(llm_caller, prompt_compiler=compile),
+            packager=AnimePackager(
+                anime_repository,
+                anime_asset_repository,
+                asset_path_resolver=lambda asset: anime_asset_service.store.local_path(
+                    asset.object_key
+                ),
+                exports_root="exports",
+            ),
         )
     return _anime_service
 

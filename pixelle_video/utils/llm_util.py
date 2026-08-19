@@ -18,6 +18,7 @@ Uses the OpenAI-compatible models endpoint.
 
 import re
 from typing import List, Tuple
+
 import httpx
 from loguru import logger
 

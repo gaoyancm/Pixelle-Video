@@ -14,9 +14,10 @@ except ImportError:
     dashscope = None
     MultiModalConversation = None
 import logging
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
-from typing import Any, Dict, List, Optional
+
 
 class QwenVLClient:
     def __init__(self,
@@ -83,7 +84,6 @@ class QwenVLClient:
 if __name__ == "__main__":
     import sys
     import time
-    import json
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from config import Config
 

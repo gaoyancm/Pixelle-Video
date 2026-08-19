@@ -25,6 +25,8 @@ from api.schemas.videos import (
     StoryboardResponse,
     VideoPackageResponse,
 )
+from pixelle_video.media_jobs import MediaJobsDisabledError
+from pixelle_video.videos.packager import VideoPackageNotReadyError
 from pixelle_video.videos.repository import VideoScriptNotFoundError
 
 
@@ -61,6 +63,10 @@ class VideoRoute(APIRoute):
                 return _error(422, "invalid_request", "The request is invalid.")
             except VideoScriptNotFoundError:
                 return _error(404, "script_not_found", "The requested video script was not found.")
+            except VideoPackageNotReadyError as exc:
+                return _error(409, "video_not_ready", str(exc))
+            except MediaJobsDisabledError:
+                return _error(503, "private_media_unavailable", "Private media generation is unavailable.")
             except SQLAlchemyError:
                 return _error(503, "service_unavailable", "Video storage is unavailable.")
             except Exception:

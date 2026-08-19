@@ -20,10 +20,9 @@ import json
 import re
 from typing import Optional, Type, TypeVar, Union
 
+from loguru import logger
 from openai import AsyncOpenAI
 from pydantic import BaseModel
-from loguru import logger
-
 
 T = TypeVar("T", bound=BaseModel)
 

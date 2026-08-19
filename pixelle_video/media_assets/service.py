@@ -43,7 +43,7 @@ def classify_media(filename: str, declared_mime: str | None) -> tuple[str, str, 
     mime = (declared_mime or guessed or "").lower()
     for media_type, mappings in ALLOWED_MEDIA_TYPES.items():
         for accepted_mime, extensions in mappings.items():
-            if suffix in extensions and mime == accepted_mime:
+            if suffix in extensions and (mime == accepted_mime or not mime):
                 return media_type, accepted_mime, suffix
     raise UnsupportedMediaError("unsupported or inconsistent media type")
 

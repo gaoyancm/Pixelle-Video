@@ -34,6 +34,10 @@ VIDEO_PLATFORM_SPECS: dict[str, dict[str, Any]] = {
 }
 
 
+class VideoPackageNotReadyError(RuntimeError):
+    """A delivery package requires a real, readable composed video."""
+
+
 class VideoPackager:
     """Generate per-platform video versions plus titles, descriptions, covers."""
 
@@ -43,10 +47,12 @@ class VideoPackager:
         *,
         exports_root: str | None = None,
         ffmpeg: str = "ffmpeg",
+        require_video: bool = True,
     ):
         self.script_repository = script_repository
         self.exports_root = Path(exports_root) if exports_root else Path(".") / "exports"
         self.ffmpeg = ffmpeg
+        self.require_video = require_video
 
     async def package(
         self,
@@ -56,6 +62,8 @@ class VideoPackager:
         video_path: str | None = None,
     ) -> dict[str, Any]:
         script = await self._require(script_id)
+        if self.require_video and (not video_path or not Path(video_path).is_file()):
+            raise VideoPackageNotReadyError("no composed video exists for packaging")
         languages = self._languages_for(script.language)
         project_key = script.project_id or "default-project"
         delivery_root = self.exports_root / project_key / script_id / "video_delivery"
@@ -73,8 +81,12 @@ class VideoPackager:
             files: list[str] = sorted(path.name for path in platform_dir.iterdir())
             if video_path:
                 adapted = self._adapt_video(video_path, platform, spec, platform_dir)
-                if adapted is not None:
-                    files.append(Path(adapted).name)
+                if adapted is None:
+                    raise VideoPackageNotReadyError(
+                        f"video adaptation failed for platform '{platform}'"
+                    )
+                files.append(Path(adapted).name)
+            self._write_metadata(platform_dir, script, platform, spec, files)
             packaged[platform] = {
                 "directory": str(platform_dir),
                 "size": list(spec["size"]),
@@ -150,15 +162,57 @@ class VideoPackager:
             encoding="utf-8",
         )
 
+    def _write_metadata(
+        self,
+        platform_dir: Path,
+        script,
+        platform: str,
+        spec: dict[str, Any],
+        files: Sequence[str],
+    ) -> None:
+        metadata = {
+            "script_id": script.id,
+            "topic": script.topic,
+            "platform": platform,
+            "size": list(spec["size"]),
+            "max_seconds": spec["max_seconds"],
+            "languages": self._languages_for(script.language),
+            "files": files,
+        }
+        (platform_dir / "metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
     def _write_cover_placeholder(
         self, platform_dir: Path, script, platform: str, spec: dict[str, Any]
     ) -> None:
-        size = spec["size"]
-        cover = platform_dir / f"cover_{size[0]}x{size[1]}.txt"
-        cover.write_text(
-            f"封面占位（合成自首帧+标题）：{script.topic} @ {size[0]}x{size[1]}",
-            encoding="utf-8",
+        """Render a real, decodable cover image (JPG) sized to the platform spec.
+
+        A deterministic Pillow composition stands in for the first-frame cover
+        until the composed video supplies a real thumbnail; it is never a text
+        placeholder masquerading as media.
+        """
+        from PIL import Image, ImageDraw, ImageFont
+
+        width, height = spec["size"]
+        image = Image.new("RGB", (width, height), color=(28, 40, 60))
+        draw = ImageDraw.Draw(image)
+        # Horizontal accent bar near the bottom.
+        draw.rectangle([0, int(height * 0.82), width, height], fill=(214, 84, 62))
+        try:
+            font = ImageFont.truetype("arial.ttf", max(20, width // 20))
+        except Exception:
+            font = ImageFont.load_default()
+        title = str(script.topic)[:40]
+        draw.text((int(width * 0.05), int(height * 0.4)), title, fill=(255, 255, 255), font=font)
+        draw.text(
+            (int(width * 0.05), int(height * 0.85)),
+            f"#{platform}",
+            fill=(255, 255, 255),
+            font=font,
         )
+        cover = platform_dir / f"cover_{width}x{height}.jpg"
+        image.save(cover, format="JPEG", quality=90)
 
     async def _require(self, script_id: str):
         script = await self.script_repository.get_script(script_id)

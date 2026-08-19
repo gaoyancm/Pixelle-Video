@@ -29,8 +29,11 @@ async def env(tmp_path: Path):
     brief_repository = ProductBriefRepository(factory)
     job_repository = MediaJobRepository(factory)
     management_repository = ManagementRepository(factory)
+    await management_repository.create_project(name="Test project", project_id="project-x")
     asset_repository = AssetRepository(factory)
-    ad_engine = AdProductionEngine(brief_repository, management_repository, job_repository)
+    ad_engine = AdProductionEngine(
+        brief_repository, management_repository, job_repository, node_selector=lambda _workflow: "test-node"
+    )
     service = ProductApplicationService(
         brief_repository,
         ad_engine=ad_engine,
@@ -51,6 +54,7 @@ def _brief_body(**extra) -> dict:
         "selling_points": ["意大利头层牛皮", "手工缝制", "多卡位设计"],
         "target_audience": "25-45岁追求品质的女性",
         "platforms": ["etsy", "tiktok", "instagram"],
+        "project_id": "project-x",
     }
     body.update(extra)
     return body
@@ -127,6 +131,15 @@ async def test_api_create_and_list(api_client) -> None:
     listing = await client.get("/api/products/briefs")
     assert listing.status_code == 200
     assert listing.json()["items"][0]["id"] == body["id"]
+
+
+async def test_api_create_requires_project_id(api_client) -> None:
+    client, _factory, _repository, _jobs, _management, _service = api_client
+    payload = _brief_body()
+    payload.pop("project_id")
+    response = await client.post("/api/products/briefs", json=payload)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_request"
 
 
 async def test_api_get_detail(api_client) -> None:

@@ -139,6 +139,6 @@ def render_faq_sidebar():
             # If FAQ cannot be loaded, only show the GitHub link
             st.markdown(f"### 💡 {tr('faq.more_help', fallback='Need help?')}")
             st.markdown(
-                f"[GitHub Issues](https://github.com/AIDC-AI/Pixelle-Video/issues) | "
-                f"[Documentation](https://aidc-ai.github.io/Pixelle-Video)"
+                "[GitHub Issues](https://github.com/AIDC-AI/Pixelle-Video/issues) | "
+                "[Documentation](https://aidc-ai.github.io/Pixelle-Video)"
             )

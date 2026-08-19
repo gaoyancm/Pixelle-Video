@@ -11,15 +11,20 @@ from typing import Any, Callable
 
 from pixelle_video.management.repository import ManagementRepository
 from pixelle_video.media_jobs.contracts import MediaInputAsset, MediaJobCreate
+from pixelle_video.media_jobs.database import MediaJobsDisabledError
 from pixelle_video.media_jobs.repository import MediaJobRepository
 from pixelle_video.products.models import ProductBrief
 from pixelle_video.products.repository import ProductBriefRepository
 
-IMAGE_WORKFLOW = "image_default"
+IMAGE_WORKFLOW = "image_qwen"  # registered text-to-image spec (requires_image=False)
 IMG2IMG_WORKFLOW = "sdxl_img2img"  # requires_image=True (image-to-image)
 VIDEO_WORKFLOW = "a800_wan22_t2v_33f"
 I2V_WORKFLOW = "gpu_4090_wan21_i2v_33f"  # requires_image=True (first-frame I2V)
 CAPTION_EXECUTOR = "llm_caption"
+
+
+class ProductProjectRequiredError(ValueError):
+    """Production requires a persisted management project."""
 
 
 class AdProductionEngine:
@@ -32,11 +37,13 @@ class AdProductionEngine:
         job_repository: MediaJobRepository,
         *,
         prompt_compiler: Callable[..., str] | None = None,
+        node_selector: Callable[[str], str] | None = None,
     ):
         self.brief_repository = brief_repository
         self.batch_repository = batch_repository
         self.job_repository = job_repository
         self.prompt_compiler = prompt_compiler
+        self.node_selector = node_selector
 
     # --- planning (pure) -------------------------------------------------------
 
@@ -57,13 +64,13 @@ class AdProductionEngine:
 
         tasks.append(
             {
-        "kind": "image",
-        "role": "main_image",
-        "workflow_type": IMG2IMG_WORKFLOW if reference_images else IMAGE_WORKFLOW,
-        "workflow_key": "workflow.json",
-        "executor_kind": "private_comfyui" if reference_images else "comfyui",
-        "reference_images": reference_images,
-                "prompt_hint": (
+                "kind": "image",
+                "role": "main_image",
+                "workflow_type": IMG2IMG_WORKFLOW if reference_images else IMAGE_WORKFLOW,
+                "workflow_key": "workflow.json",
+                "executor_kind": "private_comfyui",
+                "reference_images": reference_images,
+                "prompt": (
                     f"白色背景商品主图：{brief.product_name}；卖点："
                     f"{'、'.join(brief.selling_points_json or [])}"
                 ),
@@ -72,13 +79,13 @@ class AdProductionEngine:
         for index in range(2):
             tasks.append(
                 {
-        "kind": "image",
-        "role": f"scene_image_{index + 1}",
-        "workflow_type": IMG2IMG_WORKFLOW if reference_images else IMAGE_WORKFLOW,
-        "workflow_key": "workflow.json",
-        "executor_kind": "private_comfyui" if reference_images else "comfyui",
-        "reference_images": reference_images,
-                    "prompt_hint": (
+                    "kind": "image",
+                    "role": f"scene_image_{index + 1}",
+                    "workflow_type": IMG2IMG_WORKFLOW if reference_images else IMAGE_WORKFLOW,
+                    "workflow_key": "workflow.json",
+                    "executor_kind": "private_comfyui",
+                    "reference_images": reference_images,
+                    "prompt": (
                         f"使用场景图 {index + 1}：{brief.product_name} 在"
                         f"{brief.category or '典型'}场景中的使用"
                     ),
@@ -94,7 +101,7 @@ class AdProductionEngine:
                     "executor_kind": "private_comfyui",
                     "platform": platform,
                     "reference_images": reference_images,
-                    "prompt_hint": (
+                    "prompt": (
                         f"{platform} 广告短视频：{brief.product_name}，"
                         f"受众 {brief.target_audience or '广泛'}，时长 15-30 秒"
                     ),
@@ -108,7 +115,7 @@ class AdProductionEngine:
                     "workflow_key": "caption.json",
                     "executor_kind": CAPTION_EXECUTOR,
                     "platform": platform,
-                    "prompt_hint": (
+                    "prompt": (
                         f"{platform} 广告文案：产品 {brief.product_name}，"
                         f"卖点 {'、'.join(brief.selling_points_json or [])}，"
                         f"受众 {brief.target_audience or '广泛'}"
@@ -136,9 +143,27 @@ class AdProductionEngine:
 
             raise ProductBriefNotFoundError("product brief not found")
 
-        project_id = brief.project_id or "default-project"
+        if not brief.project_id:
+            raise ProductProjectRequiredError(
+                "A persisted management project is required before production can start."
+            )
+
+        tasks = self.plan_production(brief)
+        selected_nodes: list[str | None] = []
+        for task in tasks:
+            executor_kind = executor_kind_override or task["executor_kind"]
+            if executor_kind != "private_comfyui":
+                selected_nodes.append(None)
+                continue
+            if self.node_selector is None:
+                raise MediaJobsDisabledError
+            try:
+                selected_nodes.append(self.node_selector(task["workflow_type"]))
+            except RuntimeError:
+                raise MediaJobsDisabledError from None
+
         batch = await self.batch_repository.create_batch(
-            project_id=project_id,
+            project_id=brief.project_id,
             name=f"广告生产-{brief.product_name}",
             workflow_type="ad_production",
             common_parameters={
@@ -148,9 +173,8 @@ class AdProductionEngine:
             default_priority=1,
         )
 
-        tasks = self.plan_production(brief)
         created: dict[str, list[str]] = {"image": [], "video": [], "caption": []}
-        for task in tasks:
+        for task, node_id in zip(tasks, selected_nodes, strict=True):
             executor_kind = executor_kind_override or task["executor_kind"]
             input_assets = [
                 MediaInputAsset(asset_id=asset_id, role="input_image")
@@ -161,12 +185,12 @@ class AdProductionEngine:
                 workflow_key=task["workflow_key"],
                 executor_kind=executor_kind,
                 provider=executor_kind,
-                node_id=None,
+                node_id=node_id,
                 input_json={
                     "role": task["role"],
                     "brief_id": brief_id,
                     "product_name": brief.product_name,
-                    "prompt_hint": task["prompt_hint"],
+                    "prompt": task["prompt"],
                 },
                 input_assets_json=input_assets,
                 idempotency_key=f"{brief_id}:{task['role']}",

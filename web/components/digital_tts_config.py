@@ -20,9 +20,9 @@ from pathlib import Path
 import streamlit as st
 from loguru import logger
 
-from web.i18n import tr, get_language
-from web.utils.async_helpers import run_async
 from pixelle_video.config import config_manager
+from web.i18n import get_language, tr
+from web.utils.async_helpers import run_async
 
 
 def render_style_config(pixelle_video):
@@ -122,7 +122,7 @@ def render_style_config(pixelle_video):
         # ComfyUI Mode UI
         # ================================================================
         else:  # comfyui mode
-            tts_workflow_key = "runninghub/tts_index2.json"  # fallback
+            tts_workflow_key = "selfhost/tts_4090_cosyvoice_api.json"  # GPU fallback
             
             # Reference audio upload (optional, for voice cloning)
             ref_audio_file = st.file_uploader(

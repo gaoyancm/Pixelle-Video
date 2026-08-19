@@ -45,7 +45,7 @@ async def tts_synthesize(
     ```json
     {
         "text": "Hello, welcome to Pixelle-Video!",
-        "workflow": "runninghub/tts_edge.json"
+        "workflow": "selfhost/tts_4090_cosyvoice_api.json"
     }
     ```
     
@@ -53,7 +53,7 @@ async def tts_synthesize(
     ```json
     {
         "text": "Hello, this is a cloned voice",
-        "workflow": "runninghub/tts_index2.json",
+        "workflow": "a voice-cloning workflow that supports ref_audio",
         "ref_audio": "path/to/reference.wav"
     }
     ```
@@ -91,4 +91,3 @@ async def tts_synthesize(
     except Exception as e:
         logger.error(f"TTS synthesis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-

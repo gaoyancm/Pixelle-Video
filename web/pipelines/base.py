@@ -16,7 +16,8 @@ Pipeline UI Base & Registry
 Defines the PipelineUI protocol and the registration mechanism.
 """
 
-from typing import Dict, Any, List, Type
+from typing import Any, Dict, List, Type
+
 
 class PipelineUI:
     """

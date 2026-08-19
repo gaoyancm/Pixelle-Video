@@ -18,7 +18,7 @@ class StrictModel(BaseModel):
 class ProductBriefCreate(StrictModel):
     product_name: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1, max_length=20_000)
-    project_id: str | None = Field(default=None, max_length=64)
+    project_id: str = Field(min_length=1, max_length=64)
     category: str | None = Field(default=None, max_length=64)
     selling_points: list[str] = Field(default_factory=list, max_length=30)
     target_audience: str | None = Field(default=None, max_length=255)

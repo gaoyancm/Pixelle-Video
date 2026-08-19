@@ -25,6 +25,11 @@ _FORBIDDEN_SECRET_KEYS = {
     "comfyuibaseurl",
 }
 
+# Every kind a production producer may create must have a registered worker
+# processor.  "comfyui" (the legacy image path) is deliberately excluded after
+# the phase-10 task-2 migration onto the private_comfyui registry.
+KNOWN_EXECUTOR_KINDS = frozenset({"private_comfyui", "llm_caption"})
+
 
 def _normalized_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
@@ -102,6 +107,9 @@ class MediaOutputMetadata(BaseModel):
     height: int | None = Field(default=None, gt=0)
     duration: float | None = Field(default=None, ge=0)
     frame_count: int | None = Field(default=None, ge=0)
+    content: str | None = Field(
+        default=None, max_length=100_000, description="Inline text content for text outputs"
+    )
 
     @field_validator("relative_path")
     @classmethod
@@ -151,6 +159,16 @@ class MediaJobCreate(BaseModel):
     @classmethod
     def input_must_not_contain_credentials(cls, value: dict[str, Any]) -> dict[str, Any]:
         return reject_secret_fields(value)
+
+    @field_validator("executor_kind")
+    @classmethod
+    def executor_kind_must_be_known(cls, value: str) -> str:
+        if value not in KNOWN_EXECUTOR_KINDS:
+            raise ValueError(
+                f"unknown executor_kind '{value}'; known kinds: "
+                f"{', '.join(sorted(KNOWN_EXECUTOR_KINDS))}"
+            )
+        return value
 
     @field_validator("deadline_at")
     @classmethod

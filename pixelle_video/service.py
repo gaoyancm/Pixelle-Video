@@ -239,8 +239,17 @@ class PixelleVideoCore:
         if self._comfykit:
             logger.info("🧹 Closing ComfyKit session...")
             try:
-                await self._comfykit.close()
-                logger.info("✅ ComfyKit session closed")
+                close = getattr(self._comfykit, "close", None)
+                if callable(close):
+                    await close()
+                    logger.info("✅ ComfyKit session closed")
+                else:
+                    logger.debug("ComfyKit executor has no close hook; cleanup is complete")
+            except AttributeError as e:
+                if "close" in str(e):
+                    logger.debug("ComfyKit HTTP executor has no close hook; cleanup is complete")
+                else:
+                    logger.error(f"Failed to close ComfyKit: {e}")
             except Exception as e:
                 logger.error(f"Failed to close ComfyKit: {e}")
             finally:

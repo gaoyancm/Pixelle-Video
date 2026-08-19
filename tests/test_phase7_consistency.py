@@ -153,7 +153,8 @@ async def test_episode_report_counts_shots(env) -> None:
     report = await guard.episode_report(episode.id)
     assert report["scenes"] == 1
     assert report["shot_counts"]["pending"] == 1
-    assert report["consistent"] is True
+    assert report["consistent"] is False
+    assert report["ready"] is False
 
 
 @pytest.fixture

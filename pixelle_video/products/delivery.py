@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import shutil
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -37,8 +38,15 @@ class DeliveryPackager:
         platforms: Sequence[str],
         *,
         include_qc: bool = True,
+        captions: dict[str, dict[str, Any]] | None = None,
+        resolved_assets: dict[str, list[tuple[Any, Any]]] | None = None,
     ) -> dict[str, Any]:
-        """Package the brief's outputs into per-platform delivery folders."""
+        """Package the brief's outputs into per-platform delivery folders.
+
+        ``captions`` maps a platform to ``{"text": str, "job_id": str, "status": str}``
+        from the successful caption job. When absent or unsuccessful, captions are
+        written from the template and explicitly marked as a degraded fallback.
+        """
         brief = await self.brief_repository.get_brief(brief_id)
         if brief is None:
             from pixelle_video.products.repository import ProductBriefNotFoundError
@@ -54,8 +62,10 @@ class DeliveryPackager:
         for platform in platforms:
             platform_dir = delivery_root / platform
             platform_dir.mkdir(parents=True, exist_ok=True)
-            files = self._collect_outputs(platform)
-            self._write_captions(platform_dir, brief, platform)
+            files = self._collect_outputs(platform_dir, resolved_assets or self.resolved_assets)
+            self._write_captions(
+                platform_dir, brief, platform, (captions or {}).get(platform)
+            )
             metadata = await self._build_metadata(brief, platform, files, include_qc)
             self._write_metadata(platform_dir, metadata)
             packaged[platform] = {
@@ -71,14 +81,24 @@ class DeliveryPackager:
             "platforms": packaged,
         }
 
-    def _collect_outputs(self, platform: str) -> list[Path]:
-        """Resolve the brief's job outputs as local files."""
+    def _collect_outputs(
+        self,
+        platform_dir: Path,
+        resolved_assets: dict[str, list[tuple[Any, Any]]],
+    ) -> list[Path]:
+        """Copy resolved production outputs into this platform's package."""
         files: list[Path] = []
-        for _job_id, rows in self.resolved_assets.items():
+        for job_id, rows in resolved_assets.items():
             for _relation, asset in rows:
                 path = getattr(asset, "file_path", None) or getattr(asset, "path", None)
-                if path and Path(path).exists():
-                    files.append(Path(path))
+                if path is None:
+                    path = getattr(asset, "local_path", None)
+                if not path or not Path(path).is_file():
+                    continue
+                source = Path(path)
+                destination = platform_dir / f"{job_id[:8]}-{source.name}"
+                shutil.copy2(source, destination)
+                files.append(destination)
         return files
 
     @staticmethod
@@ -124,12 +144,34 @@ class DeliveryPackager:
         return metadata
 
     @staticmethod
-    def _write_captions(platform_dir: Path, brief, platform: str) -> None:
-        captions = DeliveryPackager._captions_for(brief, platform)
-        (platform_dir / "captions.txt").write_text(
-            "\n\n".join(captions["captions"]), encoding="utf-8"
+    def _write_captions(
+        platform_dir: Path,
+        brief,
+        platform: str,
+        caption: dict[str, Any] | None,
+    ) -> None:
+        if caption and (caption.get("text") or "").strip():
+            source = "caption_job"
+            text = caption["text"].strip()
+        else:
+            source = "fallback_template"
+            text = "\n\n".join(DeliveryPackager._captions_for(brief, platform)["captions"])
+
+        hashtags = DeliveryPackager._captions_for(brief, platform)["hashtags"]
+        (platform_dir / "captions.txt").write_text(text, encoding="utf-8")
+        (platform_dir / "hashtags.txt").write_text(" ".join(hashtags), encoding="utf-8")
+        (platform_dir / "captions_source.json").write_text(
+            json.dumps(
+                {
+                    "source": source,
+                    "job_id": caption.get("job_id") if caption else None,
+                    "status": caption.get("status") if caption else None,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
         )
-        (platform_dir / "hashtags.txt").write_text(" ".join(captions["hashtags"]), encoding="utf-8")
 
     @staticmethod
     def _write_metadata(platform_dir: Path, metadata: dict[str, Any]) -> None:

@@ -32,20 +32,19 @@ Example:
     )
 """
 
-from typing import List, Dict, Any, Optional, Callable
-from pathlib import Path
 import math
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from pixelle_video.pipelines.linear import LinearVideoPipeline, PipelineContext
 from pixelle_video.models.progress import ProgressEvent
+from pixelle_video.pipelines.linear import LinearVideoPipeline, PipelineContext
 from pixelle_video.utils.os_util import (
     create_task_output_dir,
     get_task_final_video_path,
-    get_task_frame_path,
 )
 
 # Type alias for progress callback
@@ -315,7 +314,7 @@ class AssetBasedPipeline(LinearVideoPipeline):
             logger.info(f"📝 Video title: {title} (user-specified)")
         else:
             context.title = ""
-            logger.info(f"📝 No video title specified (will be hidden in template)")
+            logger.info("📝 No video title specified (will be hidden in template)")
         
         return context
     
@@ -442,7 +441,7 @@ class AssetBasedPipeline(LinearVideoPipeline):
             asset = scene["matched_asset"]
             asset_usage[asset] = asset_usage.get(asset, 0) + 1
         
-        logger.info(f"📊 Asset usage summary:")
+        logger.info("📊 Asset usage summary:")
         for asset_path, count in asset_usage.items():
             logger.info(f"   {Path(asset_path).name}: {count} scene(s)")
         
@@ -458,12 +457,9 @@ class AssetBasedPipeline(LinearVideoPipeline):
         Returns:
             Updated context with storyboard
         """
-        from pixelle_video.models.storyboard import (
-            Storyboard,
-            StoryboardFrame, 
-            StoryboardConfig
-        )
         from datetime import datetime
+
+        from pixelle_video.models.storyboard import Storyboard, StoryboardConfig, StoryboardFrame
         
         # Extract all narrations in order for compatibility
         all_narrations = []
@@ -484,7 +480,7 @@ class AssetBasedPipeline(LinearVideoPipeline):
             dims = template_name.split("/")[0].split("x")
             media_width = int(dims[0])
             media_height = int(dims[1])
-        except:
+        except (ValueError, IndexError):
             # Default to 1080x1920
             media_width = 1080
             media_height = 1920
@@ -853,7 +849,7 @@ class AssetBasedPipeline(LinearVideoPipeline):
         Returns:
             Final context
         """
-        logger.success(f"🎉 Asset-based video generation complete!")
+        logger.success("🎉 Asset-based video generation complete!")
         logger.info(f"Video: {context.final_video_path}")
         
         # Emit completion

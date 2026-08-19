@@ -97,7 +97,12 @@ class ConsistencyGuard:
         """Overall consistency report for an episode."""
         scenes = await self.repository.list_scenes_in_episode(episode_id)
         shot_counts = {"pending": 0, "queued": 0, "succeeded": 0, "failed": 0}
+        characters: set[str] = set()
         for scene in scenes:
+            for entry in scene.characters_json or []:
+                character_id = entry.get("character_id") or entry.get("char_id") or entry.get("id")
+                if character_id:
+                    characters.add(str(character_id))
             for shot in await self.repository.list_shots(scene.id):
                 key = shot.status if shot.status in shot_counts else "pending"
                 shot_counts[key] += 1
@@ -105,7 +110,15 @@ class ConsistencyGuard:
             "episode_id": episode_id,
             "scenes": len(scenes),
             "shot_counts": shot_counts,
-            "consistent": shot_counts["failed"] == 0,
+            "characters": sorted(characters),
+            "ready": shot_counts["succeeded"] > 0
+            and shot_counts["pending"] == 0
+            and shot_counts["queued"] == 0
+            and shot_counts["failed"] == 0,
+            "consistent": shot_counts["succeeded"] > 0
+            and shot_counts["pending"] == 0
+            and shot_counts["queued"] == 0
+            and shot_counts["failed"] == 0,
         }
 
 

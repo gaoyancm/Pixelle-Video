@@ -16,6 +16,7 @@ Configuration loader - Pure YAML
 Handles loading and saving configuration from/to YAML files.
 """
 from pathlib import Path
+
 import yaml
 from loguru import logger
 

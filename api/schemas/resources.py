@@ -15,11 +15,13 @@ Resource discovery API schemas
 """
 
 from typing import List, Optional
+
 from pydantic import BaseModel, Field
 
 
 class WorkflowInfo(BaseModel):
     """Workflow information"""
+
     name: str = Field(..., description="Workflow filename")
     display_name: str = Field(..., description="Display name with source info")
     source: str = Field(..., description="Source (runninghub or selfhost)")
@@ -30,6 +32,7 @@ class WorkflowInfo(BaseModel):
 
 class WorkflowListResponse(BaseModel):
     """Workflow list response"""
+
     success: bool = True
     message: str = "Success"
     workflows: List[WorkflowInfo] = Field(..., description="List of available workflows")
@@ -37,6 +40,7 @@ class WorkflowListResponse(BaseModel):
 
 class TemplateInfo(BaseModel):
     """Template information"""
+
     name: str = Field(..., description="Template filename")
     display_name: str = Field(..., description="Display name")
     size: str = Field(..., description="Size (e.g., 1080x1920)")
@@ -49,6 +53,7 @@ class TemplateInfo(BaseModel):
 
 class TemplateListResponse(BaseModel):
     """Template list response"""
+
     success: bool = True
     message: str = "Success"
     templates: List[TemplateInfo] = Field(..., description="List of available templates")
@@ -56,6 +61,7 @@ class TemplateListResponse(BaseModel):
 
 class BGMInfo(BaseModel):
     """BGM information"""
+
     name: str = Field(..., description="BGM filename")
     path: str = Field(..., description="Full path to BGM file")
     source: str = Field(..., description="Source (default or custom)")
@@ -63,7 +69,7 @@ class BGMInfo(BaseModel):
 
 class BGMListResponse(BaseModel):
     """BGM list response"""
+
     success: bool = True
     message: str = "Success"
     bgm_files: List[BGMInfo] = Field(..., description="List of available BGM files")
-

@@ -16,8 +16,7 @@ TTS Voice Configuration
 Defines available voices for local Edge TTS inference.
 """
 
-from typing import List, Dict, Any
-
+from typing import Any, Dict, List
 
 # Edge TTS voice presets for local inference
 EDGE_TTS_VOICES: List[Dict[str, Any]] = [

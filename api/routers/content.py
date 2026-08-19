@@ -21,16 +21,16 @@ from loguru import logger
 
 from api.dependencies import PixelleVideoDep
 from api.schemas.content import (
-    NarrationGenerateRequest,
-    NarrationGenerateResponse,
     ImagePromptGenerateRequest,
     ImagePromptGenerateResponse,
+    NarrationGenerateRequest,
+    NarrationGenerateResponse,
     TitleGenerateRequest,
     TitleGenerateResponse,
 )
 from pixelle_video.utils.content_generators import (
-    generate_narrations_from_topic,
     generate_image_prompts,
+    generate_narrations_from_topic,
     generate_title,
 )
 

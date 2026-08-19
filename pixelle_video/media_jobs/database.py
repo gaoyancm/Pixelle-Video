@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -116,3 +116,15 @@ class MediaJobsDatabase:
             await self._engine.dispose()
         self._engine = None
         self._session_factory = None
+
+    async def verify_connection(self) -> None:
+        """Execute a lightweight round-trip to prove the database is reachable.
+
+        Used by the worker readiness probe (``--check``) so a launcher can
+        distinguish "worker initialized" from "worker can actually talk to the
+        database". Raises ``MediaJobsDisabledError`` when jobs are disabled.
+        """
+
+        factory = self.connect()
+        async with factory() as session:
+            await session.execute(text("SELECT 1"))

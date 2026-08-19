@@ -14,18 +14,13 @@
 Template utility functions for size parsing and template management
 """
 
-import os
-from pathlib import Path
-from typing import List, Tuple, Optional, Literal
-from pydantic import BaseModel, Field
 import logging
+from pathlib import Path
+from typing import List, Literal, Optional, Tuple
 
-from pixelle_video.utils.os_util import (
-    get_resource_path,
-    list_resource_files,
-    list_resource_dirs,
-    resource_exists
-)
+from pydantic import BaseModel, Field
+
+from pixelle_video.utils.os_util import get_resource_path, list_resource_dirs, list_resource_files
 
 logger = logging.getLogger(__name__)
 

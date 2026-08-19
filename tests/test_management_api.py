@@ -34,6 +34,7 @@ from pixelle_video.media_jobs.database import create_media_jobs_engine, sqlite_u
 from pixelle_video.media_jobs.models import Base, MediaJob
 from pixelle_video.media_jobs.repository import MediaJobRepository
 from pixelle_video.media_jobs.state_machine import ErrorCategory
+from pixelle_video.services.comfyui_workflows import WORKFLOW_SPECS
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 32
 
@@ -52,14 +53,7 @@ async def management_context(tmp_path):
             id="private-node",
             name="private",
             base_url="http://private.invalid",
-            workflow_types=list(
-                (
-                    "a800_wan22_t2v_33f",
-                    "a800_wan22_t2v_81f",
-                    "gpu_4090_wan21_i2v_33f",
-                    "gpu_4090_wan21_i2v_81f",
-                )
-            ),
+            workflow_types=list(WORKFLOW_SPECS),
             enabled=True,
         )
     ]
@@ -328,11 +322,21 @@ async def test_project_batch_crud_archive_pagination_and_catalog_redaction(manag
     assert first_archive.json() == replay_archive.json()
 
     catalog = (await client.get("/api/admin/workflows")).json()
-    assert len(catalog["items"]) == 4
+    assert len(catalog["items"]) == len(WORKFLOW_SPECS)
     serialized = str(catalog).lower()
     for forbidden in ("node_id", "base_url", ".json", "provider", "private-node"):
         assert forbidden not in serialized
     assert all(item["available"] for item in catalog["items"])
+
+
+@pytest.mark.asyncio
+async def test_workflow_catalog_marks_unavailable_without_enabled_node(management_context):
+    client, service, _, _, _ = management_context
+    service.configured_nodes = ()  # no enabled node for any workflow
+    catalog = (await client.get("/api/admin/workflows")).json()
+    assert len(catalog["items"]) == len(WORKFLOW_SPECS)
+    assert all(not item["available"] for item in catalog["items"])
+    assert all(item["unavailable_reason"] == "no_enabled_node" for item in catalog["items"])
 
 
 @pytest.mark.asyncio

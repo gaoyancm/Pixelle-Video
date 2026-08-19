@@ -138,9 +138,7 @@ class ConfigManager:
             "runninghub_concurrent_limit": self.config.comfyui.runninghub_concurrent_limit,
             "runninghub_instance_type": self.config.comfyui.runninghub_instance_type,
             "nodes": [node.model_dump() for node in self.config.comfyui.nodes],
-            "tts": {
-                "default_workflow": self.config.comfyui.tts.default_workflow,
-            },
+            "tts": self.config.comfyui.tts.model_dump(),
             "image": {
                 "default_workflow": self.config.comfyui.image.default_workflow,
                 "prompt_prefix": self.config.comfyui.image.prompt_prefix,

@@ -21,19 +21,19 @@ For real projects, copy this file and modify it according to your needs.
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 from loguru import logger
 
-from pixelle_video.pipelines.base import BasePipeline
 from pixelle_video.models.progress import ProgressEvent
 from pixelle_video.models.storyboard import (
-    Storyboard,
-    StoryboardFrame,
-    StoryboardConfig,
     ContentMetadata,
-    VideoGenerationResult
+    Storyboard,
+    StoryboardConfig,
+    StoryboardFrame,
+    VideoGenerationResult,
 )
+from pixelle_video.pipelines.base import BasePipeline
 
 
 class CustomPipeline(BasePipeline):
@@ -155,10 +155,7 @@ class CustomPipeline(BasePipeline):
         self._report_progress(progress_callback, "initializing", 0.05)
         
         # Create task directory
-        from pixelle_video.utils.os_util import (
-            create_task_output_dir,
-            get_task_final_video_path
-        )
+        from pixelle_video.utils.os_util import create_task_output_dir, get_task_final_video_path
         
         task_dir, task_id = create_task_output_dir()
         logger.info(f"Task directory: {task_dir}")
@@ -178,9 +175,8 @@ class CustomPipeline(BasePipeline):
         
         # ========== Step 0.5: Check template requirements ==========
         # Detect template type by filename prefix
-        from pathlib import Path
         from pixelle_video.services.frame_html import HTMLFrameGenerator
-        from pixelle_video.utils.template_util import resolve_template_path, get_template_type
+        from pixelle_video.utils.template_util import get_template_type, resolve_template_path
         
         template_name = Path(frame_template).name
         template_type = get_template_type(template_name)
@@ -193,12 +189,12 @@ class CustomPipeline(BasePipeline):
         logger.info(f"📐 Media size from template: {media_width}x{media_height}")
         
         if template_type == "image":
-            logger.info(f"📸 Template requires image generation")
+            logger.info("📸 Template requires image generation")
         elif template_type == "video":
-            logger.info(f"🎬 Template requires video generation")
+            logger.info("🎬 Template requires video generation")
         else:  # static
-            logger.info(f"⚡ Static template - skipping media generation pipeline")
-            logger.info(f"   💡 Benefits: Faster generation + Lower cost + No ComfyUI dependency")
+            logger.info("⚡ Static template - skipping media generation pipeline")
+            logger.info("   💡 Benefits: Faster generation + Lower cost + No ComfyUI dependency")
         
         # ========== Step 1: Process content (CUSTOMIZE THIS) ==========
         self._report_progress(progress_callback, "processing_content", 0.10)
@@ -253,7 +249,7 @@ class CustomPipeline(BasePipeline):
         else:
             # Template doesn't need images - skip image generation entirely
             final_image_prompts = [None] * len(narrations)
-            logger.info(f"⚡ Skipped image prompt generation (template doesn't need images)")
+            logger.info("⚡ Skipped image prompt generation (template doesn't need images)")
             logger.info(f"   💡 Savings: {len(narrations)} LLM calls + {len(narrations)} image generations")
         
         # ========== Step 3: Create storyboard ==========
@@ -370,7 +366,7 @@ class CustomPipeline(BasePipeline):
                 file_size=file_size
             )
             
-            logger.info(f"Custom pipeline completed")
+            logger.info("Custom pipeline completed")
             logger.info(f"Title: {title}")
             logger.info(f"Duration: {storyboard.total_duration:.2f}s")
             logger.info(f"Size: {file_size / (1024*1024):.2f} MB")

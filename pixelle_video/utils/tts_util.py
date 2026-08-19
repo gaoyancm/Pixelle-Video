@@ -18,17 +18,12 @@ Currently, TTS service uses ComfyUI workflows only.
 """
 
 import asyncio
-import ssl
 import random
-import certifi
+
 import edge_tts as edge_tts_sdk
+from aiohttp import ClientResponseError, WSServerHandshakeError
 from edge_tts.exceptions import NoAudioReceived
 from loguru import logger
-from aiohttp import WSServerHandshakeError, ClientResponseError
-
-
-# Use certifi bundle for SSL verification instead of disabling it
-_USE_CERTIFI_SSL = True
 
 # Retry configuration for Edge TTS (to handle 401 errors and NoAudioReceived)
 _RETRY_COUNT = 5           # Default retry count
@@ -140,16 +135,6 @@ async def edge_tts(
                 await asyncio.sleep(retry_delay)
             
             try:
-                # Create communicate instance with certifi SSL context
-                if _USE_CERTIFI_SSL:
-                    if attempt == 0:  # Only log info once
-                        logger.debug("Using certifi SSL certificates for secure Edge TTS connection")
-                    # Create SSL context with certifi bundle
-                    import certifi
-                    ssl_context = ssl.create_default_context(cafile=certifi.where())
-                else:
-                    ssl_context = None
-                
                 # Create communicate instance
                 communicate = edge_tts_sdk.Communicate(
                     text=text,
@@ -190,7 +175,7 @@ async def edge_tts(
                 if error_code == 401 or '401' in error_msg:
                     logger.warning(f"⚠️  Edge TTS 401 Authentication Error (attempt {attempt + 1}/{retry_count + 1})")
                     logger.debug(f"Error details: {error_msg}")
-                    logger.debug(f"This is usually caused by rate limiting. Will retry with exponential backoff...")
+                    logger.debug("This is usually caused by rate limiting. Will retry with exponential backoff...")
                 else:
                     logger.warning(f"⚠️  Edge TTS error (attempt {attempt + 1}/{retry_count + 1}): {error_code} - {e}")
                 
@@ -204,7 +189,7 @@ async def edge_tts(
                 # NoAudioReceived is often a temporary issue - retry with longer delay
                 last_error = e
                 logger.warning(f"⚠️  Edge TTS NoAudioReceived (attempt {attempt + 1}/{retry_count + 1})")
-                logger.debug(f"This is usually a temporary Microsoft service issue. Will retry with longer delay...")
+                logger.debug("This is usually a temporary Microsoft service issue. Will retry with longer delay...")
                 
                 if attempt >= retry_count:
                     logger.error(f"❌ All {retry_count + 1} attempts failed due to NoAudioReceived")
@@ -327,7 +312,7 @@ async def list_voices(locale: str = None, retry_count: int = _RETRY_COUNT, retry
                 if error_code == 401 or '401' in error_msg:
                     logger.warning(f"⚠️  Edge TTS 401 Authentication Error (list_voices attempt {attempt + 1}/{retry_count + 1})")
                     logger.debug(f"Error details: {error_msg}")
-                    logger.debug(f"This is usually caused by rate limiting. Will retry with exponential backoff...")
+                    logger.debug("This is usually caused by rate limiting. Will retry with exponential backoff...")
                 else:
                     logger.warning(f"⚠️  List voices error (attempt {attempt + 1}/{retry_count + 1}): {error_code} - {e}")
                 

@@ -30,8 +30,11 @@ async def env(tmp_path: Path):
     brief_repository = ProductBriefRepository(factory)
     job_repository = MediaJobRepository(factory)
     management_repository = ManagementRepository(factory)
+    await management_repository.create_project(name="Test project", project_id="project-x")
     asset_repository = AssetRepository(factory)
-    ad_engine = AdProductionEngine(brief_repository, management_repository, job_repository)
+    ad_engine = AdProductionEngine(
+        brief_repository, management_repository, job_repository, node_selector=lambda _workflow: "test-node"
+    )
     service = ProductApplicationService(
         brief_repository,
         ad_engine=ad_engine,
@@ -50,6 +53,7 @@ async def _brief(repository: ProductBriefRepository) -> ProductBrief:
         description="意大利头层牛皮手工缝制",
         selling_points=["头层牛皮", "手工缝制"],
         platforms=["etsy", "tiktok"],
+        project_id="project-x",
     )
 
 
@@ -69,7 +73,9 @@ async def test_plan_production_creates_image_video_caption_tasks(env) -> None:
 
 async def test_plan_production_defaults_platforms_when_empty(env) -> None:
     _factory, repository, _jobs, _management, _service, engine = env
-    brief = await repository.create_brief(product_name="默认平台", description="默认平台测试")
+    brief = await repository.create_brief(
+        product_name="默认平台", description="默认平台测试", project_id="project-x"
+    )
     tasks = engine.plan_production(brief)
     video_platforms = {task["platform"] for task in tasks if task["kind"] == "video"}
     assert video_platforms == {"etsy", "tiktok"}
@@ -78,7 +84,7 @@ async def test_plan_production_defaults_platforms_when_empty(env) -> None:
 async def test_start_production_creates_batch_and_jobs(env) -> None:
     _factory, repository, job_repository, management_repository, _service, engine = env
     brief = await _brief(repository)
-    payload = await engine.start_production(brief.id, executor_kind_override="mock_executor")
+    payload = await engine.start_production(brief.id)
     assert payload["brief_id"] == brief.id
     assert payload["batch_id"]
     assert payload["tasks"] == 7  # 3 images + 2 videos + 2 captions
@@ -92,12 +98,30 @@ async def test_start_production_creates_batch_and_jobs(env) -> None:
 async def test_start_production_jobs_are_persisted(env) -> None:
     _factory, repository, job_repository, _management, _service, engine = env
     brief = await _brief(repository)
-    payload = await engine.start_production(brief.id, executor_kind_override="mock_executor")
+    payload = await engine.start_production(brief.id)
     for kind in ("image", "video", "caption"):
         for job_id in payload["jobs"][kind]:
             job = await job_repository.get_job(job_id)
             assert job is not None
             assert job.input_json["brief_id"] == brief.id
+            if job.executor_kind == "private_comfyui":
+                assert job.node_id == "test-node"
+                assert job.input_json["prompt"]
+                assert "prompt_hint" not in job.input_json
+            else:
+                assert job.node_id is None
+
+
+async def test_no_node_rejects_before_batch_or_job_write(env) -> None:
+    _factory, repository, job_repository, management_repository, _service, _engine = env
+    brief = await _brief(repository)
+    blocked = AdProductionEngine(repository, management_repository, job_repository)
+    from pixelle_video.media_jobs import MediaJobsDisabledError
+
+    with pytest.raises(MediaJobsDisabledError):
+        await blocked.start_production(brief.id)
+    assert await job_repository.list_jobs() == []
+    assert await management_repository.list_batches(project_id="project-x") == []
 
 
 async def test_start_production_missing_brief_raises(env) -> None:
@@ -108,10 +132,21 @@ async def test_start_production_missing_brief_raises(env) -> None:
         await engine.start_production("missing-brief")
 
 
+async def test_start_production_without_project_rejects_before_writes(env) -> None:
+    _factory, repository, job_repository, management_repository, _service, engine = env
+    brief = await repository.create_brief(product_name="无项目", description="不能进入生产")
+    from pixelle_video.products.ad_engine import ProductProjectRequiredError
+
+    with pytest.raises(ProductProjectRequiredError):
+        await engine.start_production(brief.id)
+    assert await job_repository.list_jobs() == []
+    assert await management_repository.list_batches(project_id="default-project") == []
+
+
 async def test_service_progress_tracks_job_states(env) -> None:
     _factory, repository, job_repository, _management, service, engine = env
     brief = await _brief(repository)
-    await engine.start_production(brief.id, executor_kind_override="mock_executor")
+    await engine.start_production(brief.id)
     progress = await service.progress(brief.id)
     assert progress["brief_id"] == brief.id
     assert progress["total_jobs"] == 7
@@ -123,7 +158,7 @@ async def test_service_progress_tracks_job_states(env) -> None:
 async def test_service_results_groups_by_platform(env) -> None:
     _factory, repository, job_repository, _management, service, engine = env
     brief = await _brief(repository)
-    await engine.start_production(brief.id, executor_kind_override="mock_executor")
+    await engine.start_production(brief.id)
     results = await service.results(brief.id)
     assert results["brief_id"] == brief.id
     keys = set(results["groups"].keys())
@@ -150,6 +185,7 @@ async def test_api_confirm_triggers_production(api_client) -> None:
         product_name="确认测试",
         description="确认流程测试",
         platforms=["tiktok"],
+        project_id="project-x",
     )
     response = await client.post(f"/api/products/briefs/{brief.id}/confirm")
     assert response.status_code == 200
@@ -165,6 +201,7 @@ async def test_api_progress_and_results(api_client) -> None:
         product_name="进度测试",
         description="进度流程测试",
         platforms=["instagram"],
+        project_id="project-x",
     )
     await client.post(f"/api/products/briefs/{brief.id}/confirm")
     progress = await client.get(f"/api/products/briefs/{brief.id}/progress")
@@ -181,13 +218,13 @@ async def test_plan_production_caption_tasks_carry_platform(env) -> None:
     tasks = engine.plan_production(brief)
     captions = [task for task in tasks if task["kind"] == "caption"]
     assert {task["platform"] for task in captions} == {"etsy", "tiktok"}
-    assert all("广告文案" in task["prompt_hint"] for task in captions)
+    assert all("广告文案" in task["prompt"] for task in captions)
 
 
 async def test_service_progress_counts_completed_jobs(env) -> None:
     _factory, repository, job_repository, _management, service, engine = env
     brief = await _brief(repository)
-    payload = await engine.start_production(brief.id, executor_kind_override="mock_executor")
+    payload = await engine.start_production(brief.id)
     # Mark one image job as succeeded.
     first_image = payload["jobs"]["image"][0]
     from sqlalchemy import update
@@ -210,6 +247,7 @@ async def test_api_progress_tracks_running_state(api_client) -> None:
         product_name="运行态测试",
         description="运行状态测试",
         platforms=["meta"],
+        project_id="project-x",
     )
     await client.post(f"/api/products/briefs/{brief.id}/confirm")
     progress = await client.get(f"/api/products/briefs/{brief.id}/progress")

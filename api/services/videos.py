@@ -164,20 +164,28 @@ class VideoApplicationService:
         )
         result = await self.storyboard_planner.run(prompt)
         content = result.content
-        updated_json = dict(script_json)
-        updated_json["storyboard"] = {
-            "scenes": content.get("scenes", []),
-            "camera_notes": content.get("camera_notes", ""),
-        }
-        await self.repository.update_script(
-            script_id, script_json=updated_json, status="storyboarding"
+        raw_scenes = content.get("scenes", [])
+        duration = max(1, int(script.target_duration / max(1, len(raw_scenes))))
+        scenes = []
+        for scene in raw_scenes:
+            description = str(
+                scene.get("visual_direction") or scene.get("desc") or scene.get("text") or ""
+            )
+            camera = str(scene.get("camera") or "")
+            scenes.append(
+                {
+                    "text": str(scene.get("text") or scene.get("desc") or ""),
+                    "duration": scene.get("duration") or duration,
+                    "visual_direction": f"{description}，{camera}".strip("，"),
+                    "camera": camera or None,
+                }
+            )
+        board = await self._storyboard().build_storyboard(
+            script_id,
+            scenes=scenes,
+            camera_notes=str(content.get("camera_notes") or ""),
         )
-        return {
-            "script_id": script_id,
-            "frames": content.get("scenes", []),
-            "camera_notes": content.get("camera_notes", ""),
-            "source": "04-e-storyboard-planner",
-        }
+        return {**board, "source": "04-e-storyboard-planner"}
 
     async def get_storyboard(self, script_id: str) -> dict[str, Any]:
         engine = self._storyboard()

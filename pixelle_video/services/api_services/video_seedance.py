@@ -3,12 +3,13 @@ Seedance 视频生成 API 客户端 (字节跳动 ARK)
 
 """
 
+import base64
+import logging
 import os
 import time
-import logging
-import requests
-import base64
 from typing import Optional
+
+import requests
 
 logger = logging.getLogger(__name__)
 

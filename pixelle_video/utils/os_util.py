@@ -21,7 +21,7 @@ import os
 import random
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple, Literal
+from typing import Literal, Optional, Tuple
 
 
 def get_pixelle_video_root_path() -> str:

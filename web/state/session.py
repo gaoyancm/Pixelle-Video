@@ -46,12 +46,12 @@ def get_pixelle_video():
     Uses st.session_state to cache the instance per user session.
     ComfyKit is lazily initialized and automatically recreated on config changes.
     """
-    from pixelle_video.service import PixelleVideoCore
-    from pixelle_video.config import config_manager
-    
     # Compute config hash for change detection
     import hashlib
     import json
+
+    from pixelle_video.config import config_manager
+    from pixelle_video.service import PixelleVideoCore
     config_dict = config_manager.config.to_dict()
     # Only track ComfyUI config for hash (other config changes don't need core recreation)
     comfyui_config = config_dict.get("comfyui", {})

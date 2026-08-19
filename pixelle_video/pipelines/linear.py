@@ -19,16 +19,13 @@ process orchestration.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Callable
+from typing import Any, Callable, Dict, List, Optional
+
 from loguru import logger
 
-from pixelle_video.pipelines.base import BasePipeline
-from pixelle_video.models.storyboard import (
-    Storyboard,
-    VideoGenerationResult,
-    StoryboardConfig
-)
 from pixelle_video.models.progress import ProgressEvent
+from pixelle_video.models.storyboard import Storyboard, StoryboardConfig, VideoGenerationResult
+from pixelle_video.pipelines.base import BasePipeline
 
 
 @dataclass

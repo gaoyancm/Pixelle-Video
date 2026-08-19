@@ -28,7 +28,10 @@ from api.schemas.products import (
     ProgressResponse,
     ResultsResponse,
 )
+from api.services.products import ProductDeliveryNotReadyError
 from pixelle_video.media_assets.service import AssetNotFoundError
+from pixelle_video.media_jobs import MediaJobsDisabledError
+from pixelle_video.products.ad_engine import ProductProjectRequiredError
 from pixelle_video.products.platform_adapter import PlatformNotFoundError
 from pixelle_video.products.repository import ProductBriefNotFoundError
 
@@ -72,6 +75,12 @@ class ProductRoute(APIRoute):
                 return _error(404, "asset_not_found", "The requested asset was not found.")
             except PlatformNotFoundError as exc:
                 return _error(422, "platform_not_supported", str(exc))
+            except ProductProjectRequiredError as exc:
+                return _error(422, "project_required", str(exc))
+            except ProductDeliveryNotReadyError as exc:
+                return _error(409, "delivery_not_ready", str(exc))
+            except MediaJobsDisabledError:
+                return _error(503, "private_media_unavailable", "Private media generation is unavailable.")
             except SQLAlchemyError:
                 return _error(503, "service_unavailable", "Product storage is unavailable.")
             except Exception:

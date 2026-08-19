@@ -113,6 +113,21 @@ WORKFLOW_SPECS: dict[str, ComfyUIWorkflowSpec] = {
             "output_prefix": ("60", "filename_prefix"),
         },
     ),
+    "image_qwen": ComfyUIWorkflowSpec(
+        workflow_type="image_qwen",
+        filename="image_qwen.json",
+        requires_image=False,
+        parameter_targets={
+            "prompt": ("6", "text"),
+            "negative_prompt": ("7", "text"),
+            "width": ("90", "value"),
+            "height": ("91", "value"),
+            "seed": ("3", "seed"),
+            "steps": ("3", "steps"),
+            "cfg": ("3", "cfg"),
+            "output_prefix": ("60", "filename_prefix"),
+        },
+    ),
 }
 
 _WORKFLOW_KEYS = {spec.workflow_key: spec for spec in WORKFLOW_SPECS.values()}

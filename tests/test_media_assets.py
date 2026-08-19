@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import pixelle_video.management.models as _management_models  # noqa: F401
 from pixelle_video.media_assets import (
     AssetIdempotencyConflictError,
     AssetKind,
@@ -88,9 +89,7 @@ def test_local_store_streams_hashes_and_enforces_limit(tmp_path):
     assert len(result.sha256) == 64
     assert store.open(result.object_key).read() == PNG
     with pytest.raises(ObjectTooLargeError):
-        store.write_stream(
-            io.BytesIO(PNG), object_key="objects/aa/too-large.png", max_bytes=5
-        )
+        store.write_stream(io.BytesIO(PNG), object_key="objects/aa/too-large.png", max_bytes=5)
     assert not (tmp_path / "store" / "objects" / "aa" / "too-large.png").exists()
 
 
@@ -106,9 +105,7 @@ def test_local_store_rejects_symlink_escape(tmp_path):
         assert not link.exists()
         return
     with pytest.raises(StoreBoundaryError):
-        store.write_stream(
-            io.BytesIO(PNG), object_key="objects/aa/value.png", max_bytes=1024
-        )
+        store.write_stream(io.BytesIO(PNG), object_key="objects/aa/value.png", max_bytes=1024)
 
 
 @pytest.mark.asyncio
@@ -274,9 +271,7 @@ async def test_reconciliation_reports_missing_orphan_and_succeeded_gap(asset_con
         idempotency_key="upload-1",
     )
     service.store.delete(asset.object_key)
-    service.store.write_stream(
-        io.BytesIO(PNG), object_key="objects/ff/orphan.png", max_bytes=1024
-    )
+    service.store.write_stream(io.BytesIO(PNG), object_key="objects/ff/orphan.png", max_bytes=1024)
     from pixelle_video.media_jobs.models import MediaJob
 
     async with factory() as session:
@@ -303,9 +298,7 @@ async def test_reconciliation_reports_missing_orphan_and_succeeded_gap(asset_con
     report = await service.reconcile()
     assert report.missing_assets == (asset.id,)
     assert report.orphan_objects == ("objects/ff/orphan.png",)
-    assert report.succeeded_jobs_without_outputs == (
-        "00000000-0000-4000-8000-000000000002",
-    )
+    assert report.succeeded_jobs_without_outputs == ("00000000-0000-4000-8000-000000000002",)
 
 
 @pytest.mark.asyncio
@@ -325,9 +318,7 @@ async def test_output_group_registration_is_owned_atomic_and_uuid_based(asset_co
             executor_kind="private_comfyui",
             provider="private_comfyui",
             input_json={"prompt": "safe"},
-            input_assets_json=[
-                MediaInputAsset(asset_id=input_asset.id, role="input_image")
-            ],
+            input_assets_json=[MediaInputAsset(asset_id=input_asset.id, role="input_image")],
         )
     )
     async with factory() as session:
@@ -447,10 +438,8 @@ def _production_manager(tmp_path):
         history_poll_interval_seconds=0.01,
     )
     return SimpleNamespace(
-        config=SimpleNamespace(
-            media_jobs=media_jobs,
-            comfyui=SimpleNamespace(nodes=[]),
-        )
+        media_jobs=media_jobs,
+        comfyui=SimpleNamespace(nodes=[]),
     )
 
 
@@ -683,7 +672,9 @@ async def test_cleanup_file_failure_and_database_failure_remain_unavailable(
         idempotency_key="cleanup-failures",
     )
     original_delete = service.store.delete
-    monkeypatch.setattr(service.store, "delete", lambda _key: (_ for _ in ()).throw(OSError("disk")))
+    monkeypatch.setattr(
+        service.store, "delete", lambda _key: (_ for _ in ()).throw(OSError("disk"))
+    )
     with pytest.raises(OSError):
         await service.physical_cleanup(asset.id)
     assert (await service.get(asset.id)).state == AssetState.DISABLED.value
@@ -790,9 +781,42 @@ def _output_executor(service, jobs, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_registered_outputs_survive_finish_lease_loss_and_recover(
-    asset_context, tmp_path
-):
+async def test_completed_history_without_outputs_is_retried(asset_context, tmp_path):
+    service, factory = asset_context
+    jobs, running, _input = await _running_output_job(service, factory, "history-race")
+
+    class EmptyOutputAdapter:
+        async def get_outputs(self, _remote_job):
+            return []
+
+    executor = RecoverableComfyUIExecutor(
+        jobs,
+        EmptyOutputAdapter(),
+        managed_asset_root=tmp_path / "legacy",
+        managed_output_root=tmp_path / "legacy-output",
+        asset_service=service,
+    )
+    await executor._complete(running, _Lease(running), SimpleNamespace())
+    persisted = await jobs.get_job(running.job_id)
+    assert persisted.status == "running"
+    assert persisted.lease_owner is None
+    assert persisted.next_attempt_at is not None
+    assert persisted.error_category is None
+
+
+def test_webp_classification_does_not_depend_on_os_mime_registry(monkeypatch):
+    from pixelle_video.media_assets.service import classify_media
+
+    monkeypatch.setattr("mimetypes.guess_type", lambda _filename: (None, None))
+    assert classify_media("generated.webp", None) == (
+        "image",
+        "image/webp",
+        ".webp",
+    )
+
+
+@pytest.mark.asyncio
+async def test_registered_outputs_survive_finish_lease_loss_and_recover(asset_context, tmp_path):
     service, factory = asset_context
     jobs, running, input_asset = await _running_output_job(service, factory, "finish-loss")
     executor = _output_executor(service, jobs, tmp_path)
@@ -818,9 +842,7 @@ async def test_registered_outputs_survive_finish_lease_loss_and_recover(
 
 
 @pytest.mark.asyncio
-async def test_recovery_rejects_committed_relation_with_missing_object(
-    asset_context, tmp_path
-):
+async def test_recovery_rejects_committed_relation_with_missing_object(asset_context, tmp_path):
     service, factory = asset_context
     jobs, running, _input = await _running_output_job(service, factory, "missing-recovery")
     executor = _output_executor(service, jobs, tmp_path)
@@ -878,11 +900,14 @@ async def test_output_registration_failures_roll_back_compensate_and_fail_job(
     executor = _output_executor(service, jobs, tmp_path)
 
     if failure_point == "_flush_output_registration":
+
         async def fail(*_args):
             raise RuntimeError("injected database failure")
     else:
+
         def fail(*_args):
             raise RuntimeError("injected database failure")
+
     monkeypatch.setattr(service.repository, failure_point, fail)
 
     await executor._complete(running, _Lease(running), SimpleNamespace())

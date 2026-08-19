@@ -1,3 +1,4 @@
+# ruff: noqa: E402 -- Streamlit entrypoint adjusts sys.path before local imports.
 # Copyright (C) 2025 AIDC-AI
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,10 +15,10 @@
 History Page - View generation history and manage tasks
 """
 
-import sys
-from pathlib import Path
-from datetime import datetime
 import os
+import sys
+from datetime import datetime
+from pathlib import Path
 
 # Add project root to sys.path
 _script_dir = Path(__file__).resolve().parent
@@ -26,11 +27,10 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 import streamlit as st
-from loguru import logger
 
-from web.state.session import init_session_state, init_i18n, get_pixelle_video
 from web.components.header import render_header
 from web.i18n import tr
+from web.state.session import get_pixelle_video, init_i18n, init_session_state
 from web.utils.async_helpers import run_async
 
 # Page config
@@ -72,7 +72,7 @@ def format_datetime(iso_string: str) -> str:
     try:
         dt = datetime.fromisoformat(iso_string)
         return dt.strftime("%m-%d %H:%M")
-    except:
+    except Exception:
         return iso_string
 
 
@@ -194,8 +194,8 @@ def render_grid_task_card(task: dict, pixelle_video):
             st.video(video_path, autoplay=False, loop=False, muted=False)
         else:
             st.markdown(
-                f"<div style='background: #f0f0f0; height: 180px; display: flex; align-items: center; "
-                f"justify-content: center; border-radius: 4px; font-size: 48px;'>📹</div>",
+                "<div style='background: #f0f0f0; height: 180px; display: flex; align-items: center; "
+                "justify-content: center; border-radius: 4px; font-size: 48px;'>📹</div>",
                 unsafe_allow_html=True
             )
         

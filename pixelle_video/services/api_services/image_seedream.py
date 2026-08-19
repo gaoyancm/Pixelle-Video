@@ -3,10 +3,11 @@ Seedream 图像生成 API 客户端
 字节跳动 ARK - doubao-seedream-5-0-260128 模型
 """
 
+import logging
 import os
 import time
-import logging
-from typing import Optional, List, Dict
+from typing import Dict, List, Optional
+
 import httpx
 from openai import OpenAI
 
@@ -170,7 +171,6 @@ class SeedreamClient:
             extra_body["style"] = kwargs["style"]
 
         # 处理参考图 (图生图)
-        image_urls = []
         if image_paths and len(image_paths) > 0:
             # 处理参考图：支持 URL 和本地文件
             ref_images = []
@@ -247,7 +247,6 @@ class SeedreamClient:
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from config import Config  # 加载 .env
 
     print("=== Seedream 可用性测试 ===")
     api_key = os.getenv("ARK_API_KEY", "")

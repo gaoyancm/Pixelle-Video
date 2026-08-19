@@ -6,7 +6,7 @@ from typing import Callable
 
 from fastapi import APIRouter, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.routing import APIRoute
 from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
@@ -28,7 +28,10 @@ from api.schemas.anime import (
     ShotPlanResponse,
     ShotProgressResponse,
 )
+from pixelle_video.anime.packager import AnimeDeliveryNotReadyError
 from pixelle_video.anime.repository import AnimeNotFoundError
+from pixelle_video.anime.shot_engine import AnimeWorkflowUnavailableError
+from pixelle_video.media_jobs import MediaJobsDisabledError
 
 
 def _error(status: int, code: str, message: str, **extra) -> JSONResponse:
@@ -75,6 +78,17 @@ class AnimeRoute(APIRoute):
                 return _error(422, "invalid_request", "The request is invalid.")
             except AnimeNotFoundError:
                 return _error(404, "anime_not_found", "The requested anime entity was not found.")
+            except AnimeDeliveryNotReadyError as exc:
+                return _error(409, "delivery_not_ready", str(exc))
+            except AnimeWorkflowUnavailableError as exc:
+                return _error(
+                    503,
+                    "required_workflow_unavailable",
+                    str(exc),
+                    required_workflow=exc.workflow_type,
+                )
+            except MediaJobsDisabledError:
+                return _error(503, "private_media_unavailable", "Private media generation is unavailable.")
             except SQLAlchemyError:
                 return _error(503, "service_unavailable", "Anime storage is unavailable.")
             except Exception:
@@ -235,3 +249,20 @@ async def cross_episode_consistency(character_id: str, season_no: int, service: 
 @router.get("/episodes/{episode_id}/consistency-report")
 async def episode_consistency(episode_id: str, service: AnimeServiceDep):
     return await service.episode_report(episode_id)
+
+
+@router.post("/episodes/{episode_id}/package")
+async def package_episode(episode_id: str, service: AnimeServiceDep):
+    return await service.package_episode(episode_id)
+
+
+@router.get("/episodes/{episode_id}/download")
+async def download_episode(episode_id: str, service: AnimeServiceDep):
+    path = await service.episode_download_path(episode_id)
+    if path is None:
+        return _error(404, "package_missing", "No anime delivery package exists yet.")
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=f"{episode_id}_anime_delivery.zip",
+    )

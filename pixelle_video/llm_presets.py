@@ -16,8 +16,7 @@ LLM Presets - Predefined configurations for popular LLM providers
 All providers support OpenAI SDK protocol.
 """
 
-from typing import Dict, Any, List
-
+from typing import Any, Dict, List
 
 LLM_PRESETS: List[Dict[str, Any]] = [
     {

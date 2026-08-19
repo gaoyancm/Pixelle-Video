@@ -19,7 +19,7 @@ These functions are reusable across different pipelines.
 
 import json
 import re
-from typing import List, Optional, Literal
+from typing import List, Literal, Optional
 
 from loguru import logger
 

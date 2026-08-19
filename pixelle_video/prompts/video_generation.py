@@ -19,7 +19,6 @@ For generating video prompts from narrations.
 import json
 from typing import List
 
-
 VIDEO_PROMPT_GENERATION_PROMPT = """# Role Definition
 You are a professional video creative designer, skilled at creating dynamic and expressive video generation prompts for video scripts, transforming narrative content into vivid video scenes.
 

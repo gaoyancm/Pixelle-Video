@@ -33,7 +33,9 @@ async def env(tmp_path: Path):
     job_repository = MediaJobRepository(factory)
     management_repository = ManagementRepository(factory)
     asset_repository = AssetRepository(factory)
-    ad_engine = AdProductionEngine(brief_repository, management_repository, job_repository)
+    ad_engine = AdProductionEngine(
+        brief_repository, management_repository, job_repository, node_selector=lambda _workflow: "test-node"
+    )
     exports_root = tmp_path / "exports"
     packager = DeliveryPackager(brief_repository, exports_root=str(exports_root))
     service = ProductApplicationService(
@@ -42,6 +44,7 @@ async def env(tmp_path: Path):
         asset_repository=asset_repository,
         job_repository=job_repository,
         delivery_packager=packager,
+        require_complete_outputs=False,
     )
     try:
         yield (
@@ -155,7 +158,9 @@ async def test_qc_runs_before_delivery(tmp_path: Path) -> None:
         qc_runner=fake_qc,
         exports_root=str(tmp_path / "exports-qc"),
     )
-    service = ProductApplicationService(brief_repository, delivery_packager=packager)
+    service = ProductApplicationService(
+        brief_repository, delivery_packager=packager, require_complete_outputs=False
+    )
     brief_id = await _brief(brief_repository)
     await service.package(brief_id, ["meta"])
     assert qc_calls == ["job-qc-1"]
@@ -203,7 +208,7 @@ async def test_package_resolves_brief_qc_job_and_populates_metadata(env) -> None
     # Wire the packager's QC runner (as the production dependency does).
     service.delivery_packager.qc_runner = fake_qc
     # Start production so the brief has jobs to resolve for QC.
-    await service.ad_engine.start_production(brief_id, executor_kind_override="mock_executor")
+    await service.ad_engine.start_production(brief_id)
     payload = await service.package(brief_id, ["tiktok"])
     metadata = payload["platforms"]["tiktok"]["metadata"]
     assert metadata["qc"] is not None
@@ -243,7 +248,7 @@ async def test_real_qc_executor_populates_metadata_json(env) -> None:
     brief_id = await _brief(repository)
     qc_executor = QCExecutor(qc_repository, job_lookup=job_repository.get_job)
     service.delivery_packager.qc_runner = qc_executor.run_qc
-    await service.ad_engine.start_production(brief_id, executor_kind_override="mock_executor")
+    await service.ad_engine.start_production(brief_id)
     payload = await service.package(brief_id, ["tiktok"])
     metadata = payload["platforms"]["tiktok"]["metadata"]
     assert metadata["qc"] is not None

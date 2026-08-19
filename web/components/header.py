@@ -16,7 +16,7 @@ Header components for web UI
 
 import streamlit as st
 
-from web.i18n import tr, get_available_languages, set_language
+from web.i18n import get_available_languages, set_language, tr
 from web.utils.streamlit_helpers import safe_rerun
 
 

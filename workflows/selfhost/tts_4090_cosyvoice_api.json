@@ -1,0 +1,37 @@
+{
+  "2": {
+    "class_type": "TextNode",
+    "inputs": {
+      "text": "欢迎使用 AI Media Platform。"
+    },
+    "_meta": {
+      "title": "$text.text!"
+    }
+  },
+  "14": {
+    "class_type": "SaveAudio",
+    "inputs": {
+      "audio": [
+        "15",
+        0
+      ],
+      "filename_prefix": "audio/pixelle_tts"
+    },
+    "_meta": {
+      "title": "Save Audio (FLAC)"
+    }
+  },
+  "15": {
+    "class_type": "CosyVoiceNode",
+    "inputs": {
+      "tts_text": [
+        "2",
+        0
+      ],
+      "speed": 1.0,
+      "inference_mode": "预训练音色",
+      "sft_dropdown": "中文女",
+      "seed": 42
+    }
+  }
+}

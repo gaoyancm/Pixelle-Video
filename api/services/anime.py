@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from pixelle_video.anime.consistency import ConsistencyGuard
+from pixelle_video.anime.packager import AnimePackager
 from pixelle_video.anime.repository import AnimeRepository
 from pixelle_video.anime.shot_engine import ShotProductionEngine
 from pixelle_video.media_jobs.repository import MediaJobRepository
@@ -25,6 +26,7 @@ class AnimeApplicationService:
         storyboard_planner: Any | None = None,
         plan_repository: Any | None = None,
         consistency_verifier: Any | None = None,
+        packager: AnimePackager | None = None,
     ):
         self.repository = repository
         self.job_repository = job_repository
@@ -35,6 +37,7 @@ class AnimeApplicationService:
         self.plan_repository = plan_repository
         self.consistency_verifier = consistency_verifier
         self.qc_runner = qc_runner
+        self.packager = packager
 
     # --- C1 ---------------------------------------------------------------------
 
@@ -214,6 +217,16 @@ class AnimeApplicationService:
 
     async def shot_progress(self, scene_id: str) -> dict[str, Any]:
         return await self._engine().progress(scene_id)
+
+    async def package_episode(self, episode_id: str) -> dict[str, Any]:
+        if self.packager is None:
+            raise RuntimeError("anime packager not configured")
+        return await self.packager.package(episode_id)
+
+    async def episode_download_path(self, episode_id: str):
+        if self.packager is None:
+            raise RuntimeError("anime packager not configured")
+        return await self.packager.download_path(episode_id)
 
     # --- C4 ---------------------------------------------------------------------
 

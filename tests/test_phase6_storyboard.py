@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from api.dependencies import get_video_service
 from api.routers.videos import router as videos_router
 from api.services.videos import VideoApplicationService
+from pixelle_video.media_assets.models import MediaAsset
+from pixelle_video.media_assets.repository import AssetRepository
 from pixelle_video.media_jobs.models import Base
 from pixelle_video.media_jobs.repository import MediaJobRepository
 from pixelle_video.videos.repository import VideoScriptRepository
@@ -28,7 +30,9 @@ async def env(tmp_path: Path):
     repository = VideoScriptRepository(factory)
     job_repository = MediaJobRepository(factory)
     script_engine = ScriptEngine(repository)
-    storyboard_engine = StoryboardEngine(repository, job_repository)
+    storyboard_engine = StoryboardEngine(
+        repository, job_repository, node_selector=lambda _workflow: "test-node"
+    )
     service = VideoApplicationService(
         repository,
         script_engine=script_engine,
@@ -41,10 +45,13 @@ async def env(tmp_path: Path):
         await engine.dispose()
 
 
-async def _make_script(repository: VideoScriptRepository) -> str:
+async def _make_script(
+    repository: VideoScriptRepository, *, reference_image_id: str | None = None
+) -> str:
     payload = await ScriptEngine(repository).generate_script(
         topic="人工智能如何改变日常生活",
         target_duration=60,
+        reference_image_id=reference_image_id,
     )
     return payload["id"]
 
@@ -85,8 +92,10 @@ async def test_generate_assets_creates_jobs(env) -> None:
     _factory, repository, job_repository, _service, engine = env
     script_id = await _make_script(repository)
     await engine.build_storyboard(script_id)
-    payload = await engine.generate_assets(script_id, executor_kind_override="mock_executor")
+    payload = await engine.generate_assets(script_id)
     assert len(payload["jobs"]) == 3
+    for job_id in payload["jobs"].values():
+        assert (await job_repository.get_job(job_id)).node_id == "test-node"
     for job_id in payload["jobs"].values():
         job = await job_repository.get_job(job_id)
         assert job is not None
@@ -97,19 +106,73 @@ async def test_generate_assets_updates_frames(env) -> None:
     _factory, repository, _jobs, _service, engine = env
     script_id = await _make_script(repository)
     await engine.build_storyboard(script_id)
-    await engine.generate_assets(script_id, executor_kind_override="mock_executor")
+    await engine.generate_assets(script_id)
     script = await repository.get_script(script_id)
     frames = script.script_json["storyboard"]["frames"]
-    assert all(frame["generated_asset_id"] for frame in frames)
+    assert all(frame["job_id"] for frame in frames)
     assert all(frame["status"] == "queued" for frame in frames)
     assert script.status == "assets"
+
+
+async def test_reference_backed_storyboard_routes_every_frame_to_4090_workflows(env) -> None:
+    factory, repository, job_repository, _service, _engine = env
+
+    def only_4090(workflow: str) -> str:
+        if workflow in {"sdxl_img2img", "gpu_4090_wan21_i2v_33f"}:
+            return "gpu-4090"
+        raise RuntimeError("workflow unavailable")
+
+    engine = StoryboardEngine(repository, job_repository, node_selector=only_4090)
+    await AssetRepository(factory).create(
+        MediaAsset(
+            id="asset-reference",
+            kind="input",
+            state="available",
+            backend="local",
+            object_key="inputs/reference.png",
+            original_filename="reference.png",
+            media_type="image",
+            mime_type="image/png",
+            size_bytes=1,
+            sha256="a" * 64,
+            source="upload",
+        )
+    )
+    script_id = await _make_script(repository, reference_image_id="asset-reference")
+    await engine.build_storyboard(script_id)
+    payload = await engine.generate_assets(script_id)
+    jobs = [await job_repository.get_job(job_id) for job_id in payload["jobs"].values()]
+    assert [job.workflow_type for job in jobs] == [
+        "sdxl_img2img",
+        "sdxl_img2img",
+        "gpu_4090_wan21_i2v_33f",
+    ]
+    assert all(job.node_id == "gpu-4090" for job in jobs)
+    assert all(job.input_assets_json[0]["asset_id"] == "asset-reference" for job in jobs)
+    assert jobs[2].input_json["prompt"].startswith("camera moves through")
+
+
+async def test_4090_only_without_reference_rejects_before_any_job_write(env) -> None:
+    _factory, repository, job_repository, _service, _engine = env
+
+    def only_4090(_workflow: str) -> str:
+        raise RuntimeError("workflow unavailable")
+
+    engine = StoryboardEngine(repository, job_repository, node_selector=only_4090)
+    script_id = await _make_script(repository)
+    await engine.build_storyboard(script_id)
+    from pixelle_video.media_jobs import MediaJobsDisabledError
+
+    with pytest.raises(MediaJobsDisabledError):
+        await engine.generate_assets(script_id)
+    assert await job_repository.list_jobs() == []
 
 
 async def test_progress_counts_states(env) -> None:
     _factory, repository, job_repository, _service, engine = env
     script_id = await _make_script(repository)
     await engine.build_storyboard(script_id)
-    payload = await engine.generate_assets(script_id, executor_kind_override="mock_executor")
+    payload = await engine.generate_assets(script_id)
     from sqlalchemy import update
 
     from pixelle_video.media_jobs.models import MediaJob

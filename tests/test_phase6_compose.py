@@ -257,6 +257,37 @@ async def test_get_video_service_wires_tts_into_composer(tmp_path, monkeypatch) 
     assert service.composer.asset_resolver is not None
 
 
+def test_production_tts_config_selects_4090_cosyvoice_workflow() -> None:
+    from pixelle_video.config.loader import load_config_dict
+    from pixelle_video.config.schema import PixelleVideoConfig
+
+    config = PixelleVideoConfig(**load_config_dict("config.yaml"))
+    assert config.comfyui.tts.inference_mode == "comfyui"
+    assert (
+        config.comfyui.tts.comfyui.default_workflow
+        == "selfhost/tts_4090_cosyvoice_api.json"
+    )
+    serialized = config.to_dict()["comfyui"]["tts"]
+    assert serialized["inference_mode"] == "comfyui"
+    assert (
+        serialized["comfyui"]["default_workflow"]
+        == "selfhost/tts_4090_cosyvoice_api.json"
+    )
+
+
+def test_cosyvoice_workflow_has_injectable_text_and_gpu_node() -> None:
+    import json
+    from pathlib import Path
+
+    workflow = json.loads(
+        Path("workflows/selfhost/tts_4090_cosyvoice_api.json").read_text(encoding="utf-8")
+    )
+    assert workflow["2"]["_meta"]["title"] == "$text.text!"
+    assert workflow["15"]["class_type"] == "CosyVoiceNode"
+    assert workflow["15"]["inputs"]["inference_mode"] == "预训练音色"
+    assert workflow["14"]["class_type"] == "SaveAudio"
+
+
 async def test_production_wiring_compose_end_to_end_with_audio(tmp_path, monkeypatch) -> None:
     """Assertion de-faking: real get_video_service -> compose() without
     errors -> ffprobe verifies the composed video carries an audio stream.

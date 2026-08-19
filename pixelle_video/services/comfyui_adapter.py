@@ -312,6 +312,24 @@ class ComfyUIAdapter:
             workflow_type=prepared.workflow_type,
         )
 
+    async def has_capacity(self, node_id: str) -> bool:
+        """Return whether the remote queue is below the configured node limit."""
+
+        node = self._nodes.get(node_id)
+        if node is None or not node.enabled:
+            raise ValueError(f"Unknown or disabled ComfyUI node '{node_id}'")
+        async with self._client(node) as client:
+            response = await client.get("/queue")
+        if response.status_code == 404:
+            # Compatibility with older/private gateways that do not expose
+            # ComfyUI's optional queue endpoint.
+            return True
+        response.raise_for_status()
+        payload = response.json()
+        running = payload.get("queue_running") or []
+        pending = payload.get("queue_pending") or []
+        return len(running) + len(pending) < node.concurrency
+
     async def query_status(self, job: ComfyUIJob) -> ComfyUIJobStatus:
         """Query history and queue data and return a normalized status."""
 

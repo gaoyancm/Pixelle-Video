@@ -4,13 +4,12 @@
 支持 wan2.7-i2v, wan2.6-i2v-flash 等模型的图生视频功能
 """
 
-import os
 import logging
+import os
 import time
-import threading
 from contextlib import contextmanager
-from typing import Optional
 from http import HTTPStatus
+from typing import Optional
 
 try:
     import dashscope

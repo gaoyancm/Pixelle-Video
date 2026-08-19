@@ -28,6 +28,8 @@ if TYPE_CHECKING:
     from pixelle_video.media_assets import AssetService
 
 _VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".mkv"}
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+_MEDIA_EXTENSIONS = _VIDEO_EXTENSIONS | _IMAGE_EXTENSIONS
 _MANAGED_COMFYUI_OUTPUT_TYPE = "output"
 _LEGACY_ASSET_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _UUID_SHAPED = re.compile(
@@ -178,6 +180,16 @@ class RecoverableComfyUIExecutor:
             )
             return
 
+        capacity_probe = getattr(self.adapter, "has_capacity", None)
+        if capacity_probe is not None:
+            try:
+                if not await capacity_probe(job.node_id):
+                    await self._release_later(lease)
+                    return
+            except Exception:
+                await self._release_later(lease)
+                return
+
         await lease.mutate(
             lambda status, version: self.repository.transition_owned(
                 job.job_id,
@@ -313,6 +325,13 @@ class RecoverableComfyUIExecutor:
             return
         try:
             remote_outputs = await self.adapter.get_outputs(remote_job)
+            if not remote_outputs:
+                # ComfyUI (and some reverse proxies) may expose completed=true a
+                # moment before the output list becomes visible. Keep the durable
+                # job running and retry history after the normal poll interval;
+                # the job deadline remains the bounded terminal guard.
+                await self._release_later(lease)
+                return
             outputs, generated_assets = await self._store_outputs(job, remote_outputs)
         except Exception as error:
             await self._finish(
@@ -329,7 +348,7 @@ class RecoverableComfyUIExecutor:
                 lease,
                 JobStatus.FAILED,
                 ErrorCategory.OUTPUT_MISSING,
-                "ComfyUI completed without a valid media output",
+                "ComfyUI completed without a valid managed video output",
             )
             return
         registered = False
@@ -341,7 +360,14 @@ class RecoverableComfyUIExecutor:
                         lease_owner=lease.worker_id,
                         expected_version=version,
                         assets=generated_assets,
-                        roles=["generated_video"] * len(generated_assets),
+                        roles=[
+                            (
+                                "generated_image"
+                                if asset.media_type == "image"
+                                else "generated_video"
+                            )
+                            for asset in generated_assets
+                        ],
                         output_metadata=[output.model_dump() for output in outputs],
                     )
                 )
@@ -478,7 +504,7 @@ class RecoverableComfyUIExecutor:
         generated_assets = []
         for index, output in enumerate(outputs):
             suffix = Path(output.filename).suffix.lower()
-            if suffix not in _VIDEO_EXTENSIONS:
+            if suffix not in _MEDIA_EXTENSIONS:
                 continue
             if not self._is_safe_remote_output_reference(output):
                 continue
@@ -511,7 +537,7 @@ class RecoverableComfyUIExecutor:
             managed.append(
                 MediaOutputMetadata(
                     output_id=f"{job.job_id}-{index}",
-                    media_type="video",
+                    media_type=("image" if suffix in _IMAGE_EXTENSIONS else "video"),
                     relative_path=relative.as_posix(),
                     size=len(content),
                     mime_type=mimetypes.guess_type(output.filename)[0]

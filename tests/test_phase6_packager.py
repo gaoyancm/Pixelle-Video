@@ -27,7 +27,9 @@ async def env(tmp_path: Path):
     factory = async_sessionmaker(engine, expire_on_commit=False)
     repository = VideoScriptRepository(factory)
     exports_root = tmp_path / "exports"
-    packager = VideoPackager(repository, exports_root=str(exports_root))
+    packager = VideoPackager(
+        repository, exports_root=str(exports_root), require_video=False
+    )
     service = VideoApplicationService(
         repository, script_engine=ScriptEngine(repository), packager=packager
     )
@@ -75,14 +77,20 @@ async def test_package_writes_titles_and_descriptions(env) -> None:
     assert "zh-CN" in descriptions
 
 
-async def test_package_cover_placeholder(env) -> None:
+async def test_package_cover_is_real_image(env) -> None:
     _factory, repository, service, exports_root = env
     script_id = await _make_script(repository)
     await service.package(script_id, ["reels"])
     platform_dir = exports_root / "project-x" / script_id / "video_delivery" / "reels"
-    cover = platform_dir / "cover_1080x1920.txt"
+    cover = platform_dir / "cover_1080x1920.jpg"
     assert cover.exists()
-    assert "人工智能如何改变日常生活" in cover.read_text(encoding="utf-8")
+    assert cover.stat().st_size > 0
+    # The cover must be a decodable image of the exact platform size.
+    from PIL import Image
+
+    with Image.open(cover) as image:
+        assert image.format == "JPEG"
+        assert image.size == (1080, 1920)
 
 
 async def test_package_languages_include_secondary(env) -> None:

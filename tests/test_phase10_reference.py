@@ -71,9 +71,14 @@ async def product_env(tmp_path: Path):
     brief_repository = ProductBriefRepository(factory)
     job_repository = MediaJobRepository(factory)
     management_repository = ManagementRepository(factory)
+    await management_repository.create_project(
+        name="Phase 10 reference project", project_id="phase10-reference-project"
+    )
     asset_repository = AssetRepository(factory)
     plan_repository = ContentPlanRepository(factory)
-    ad_engine = AdProductionEngine(brief_repository, management_repository, job_repository)
+    ad_engine = AdProductionEngine(
+        brief_repository, management_repository, job_repository, node_selector=lambda _workflow: "test-node"
+    )
     service = ProductApplicationService(
         brief_repository,
         ad_engine=ad_engine,
@@ -130,6 +135,7 @@ async def test_05_video_tasks_become_i2v_with_reference(product_env) -> None:
         description="意大利头层牛皮",
         platforms=["etsy", "tiktok"],
         reference_images=[asset_id],
+        project_id="phase10-reference-project",
     )
     tasks = engine.plan_production(brief)
     for task in tasks:
@@ -151,8 +157,9 @@ async def test_05_start_production_links_input_asset(product_env) -> None:
         description="意大利头层牛皮",
         platforms=["etsy", "tiktok"],
         reference_images=[asset_id],
+        project_id="phase10-reference-project",
     )
-    payload = await engine.start_production(brief.id, executor_kind_override="mock_executor")
+    payload = await engine.start_production(brief.id)
     for job_id in payload["jobs"]["video"]:
         job = await job_repository.get_job(job_id)
         assert job.workflow_type == I2V_WORKFLOW
@@ -176,7 +183,9 @@ async def video_env(tmp_path: Path):
     asset_repository = AssetRepository(factory)
     plan_repository = ContentPlanRepository(factory)
     script_engine = ScriptEngine(repository)
-    storyboard_engine = StoryboardEngine(repository, job_repository)
+    storyboard_engine = StoryboardEngine(
+        repository, job_repository, node_selector=lambda _workflow: "test-node"
+    )
     service = VideoApplicationService(
         repository,
         script_engine=script_engine,
@@ -222,7 +231,7 @@ async def test_06_video_frames_become_i2v_with_reference(video_env) -> None:
         )
     )["id"]
     await engine.build_storyboard(script_id)
-    payload = await engine.generate_assets(script_id, executor_kind_override="mock_executor")
+    payload = await engine.generate_assets(script_id)
     # frame 3 is the motion/video frame (index % 3 == 0)
     video_job_id = payload["jobs"]["3"]
     job = await job_repository.get_job(video_job_id)
@@ -240,7 +249,7 @@ async def test_06_no_reference_keeps_t2v(video_env) -> None:
         )
     )["id"]
     await engine.build_storyboard(script_id)
-    payload = await engine.generate_assets(script_id, executor_kind_override="mock_executor")
+    payload = await engine.generate_assets(script_id)
     job = await job_repository.get_job(payload["jobs"]["3"])
     assert job.workflow_type != STORYBOARD_I2V_WORKFLOW
 

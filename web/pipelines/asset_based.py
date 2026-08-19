@@ -24,8 +24,10 @@ from typing import Any
 import streamlit as st
 from loguru import logger
 
-from web.i18n import tr, get_language
-from web.pipelines.base import PipelineUI, register_pipeline_ui
+from pixelle_video.config import config_manager
+from pixelle_video.models.progress import ProgressEvent
+from web.components.content_input import render_bgm_section, render_version_info
+from web.i18n import get_language, tr
 from web.pipelines.api_workflows import (
     list_api_media_workflows,
     render_api_video_controls,
@@ -33,11 +35,9 @@ from web.pipelines.api_workflows import (
     workflow_source_help,
     workflow_source_label,
 )
-from web.components.content_input import render_bgm_section, render_version_info
+from web.pipelines.base import PipelineUI, register_pipeline_ui
 from web.utils.async_helpers import run_async
 from web.utils.streamlit_helpers import check_and_warn_selfhost_workflow
-from pixelle_video.config import config_manager
-from pixelle_video.models.progress import ProgressEvent
 
 
 class AssetBasedPipelineUI(PipelineUI):

@@ -150,6 +150,19 @@ def test_private_node_config_is_backward_compatible() -> None:
 
 
 @pytest.mark.asyncio
+async def test_has_capacity_respects_remote_queue_and_node_limit() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/queue"
+        return httpx.Response(
+            200,
+            json={"queue_running": [[1, "active-prompt", {}, {}]], "queue_pending": []},
+        )
+
+    adapter = make_a800_adapter(handler)
+    assert await adapter.has_capacity("a800") is False
+
+
+@pytest.mark.asyncio
 async def test_private_node_client_does_not_inherit_environment_proxy() -> None:
     node = ComfyUINodeConfig(
         id="gpu-4090",

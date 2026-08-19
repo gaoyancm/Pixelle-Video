@@ -14,17 +14,15 @@
 Output preview components for web UI (right column)
 """
 
-import base64
 import os
-from pathlib import Path
 
 import streamlit as st
 from loguru import logger
 
-from web.i18n import tr, get_language
-from web.utils.async_helpers import run_async
-from pixelle_video.models.progress import ProgressEvent
 from pixelle_video.config import config_manager
+from pixelle_video.models.progress import ProgressEvent
+from web.i18n import get_language, tr
+from web.utils.async_helpers import run_async
 
 
 def render_output_preview(pixelle_video, video_params):
@@ -182,7 +180,10 @@ def render_single_output(pixelle_video, video_params):
                 file_size_mb = result.file_size / (1024 * 1024)
                 
                 # Parse video size from template path
-                from pixelle_video.utils.template_util import parse_template_size, resolve_template_path
+                from pixelle_video.utils.template_util import (
+                    parse_template_size,
+                    resolve_template_path,
+                )
                 template_path = resolve_template_path(result.storyboard.config.frame_template)
                 video_width, video_height = parse_template_size(template_path)
                 
@@ -342,8 +343,9 @@ def render_batch_output(pixelle_video, video_params):
                 return callback
             
             # Execute batch generation
-            from web.utils.batch_manager import SimpleBatchManager
             import time
+
+            from web.utils.batch_manager import SimpleBatchManager
             
             batch_manager = SimpleBatchManager()
             start_time = time.time()

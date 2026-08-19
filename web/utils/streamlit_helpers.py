@@ -17,8 +17,8 @@ Streamlit helper functions
 import streamlit as st
 import streamlit.components.v1 as components
 
-from web.i18n import tr
 from pixelle_video.config import config_manager
+from web.i18n import tr
 
 
 def safe_rerun():

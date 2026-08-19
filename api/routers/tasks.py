@@ -17,10 +17,11 @@ Endpoints for managing async tasks (checking status, canceling, etc.)
 """
 
 from typing import List, Optional
+
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 
-from api.tasks import task_manager, Task, TaskStatus
+from api.tasks import Task, TaskStatus, task_manager
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 

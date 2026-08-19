@@ -4,19 +4,19 @@
 支持模型: kling-v3, kling-v2-6, kling-v2-5-turbo
 """
 
-import os
+import base64
 import io
+import logging
+import os
 import ssl
 import time
-import base64
-import logging
 from typing import Optional
 
 import jwt
 import requests
+from PIL import Image
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from PIL import Image
 
 logger = logging.getLogger(__name__)
 

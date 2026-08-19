@@ -27,7 +27,9 @@ async def env(tmp_path: Path):
     factory = async_sessionmaker(engine, expire_on_commit=False)
     repository = AnimeRepository(factory)
     job_repository = MediaJobRepository(factory)
-    engine_c3 = ShotProductionEngine(repository, job_repository)
+    engine_c3 = ShotProductionEngine(
+        repository, job_repository, node_selector=lambda _workflow: "test-node"
+    )
     service = AnimeApplicationService(
         repository, job_repository=job_repository, shot_engine=engine_c3
     )
@@ -81,11 +83,14 @@ async def test_generate_shot_creates_job(env) -> None:
     scene_id, _episode = await _seed_scene(repository)
     shot_ids = await _seed_shots(repository, scene_id)
     await engine.plan_shots(scene_id)
-    payload = await engine.generate_shot(shot_ids[0], executor_kind_override="mock_executor")
+    payload = await engine.generate_shot(shot_ids[0])
     assert payload["status"] == "queued"
+    assert (await job_repository.get_job(payload["job_id"])).node_id == "test-node"
     job = await job_repository.get_job(payload["job_id"])
     assert job is not None
     assert job.input_json["shot_id"] == shot_ids[0]
+    assert job.input_json["prompt"] == job.input_json["video_prompt"]
+    assert "prompt_hint" not in job.input_json
     shot = await repository.get_shot(shot_ids[0])
     assert shot.status == "queued"
     assert shot.generated_asset_id == payload["job_id"]
@@ -104,7 +109,7 @@ async def test_generate_scene_parents_first(env) -> None:
         parent_shot_id=shot_ids[0],
     )
     await engine.plan_shots(scene_id)
-    payload = await engine.generate_scene(scene_id, executor_kind_override="mock_executor")
+    payload = await engine.generate_scene(scene_id)
     assert len(payload["shots"]) == 4
     parent_first = payload["shots"][0]
     assert parent_first["parent_shot_id"] is None
@@ -115,7 +120,7 @@ async def test_retry_shot_local_redo(env) -> None:
     scene_id, _episode = await _seed_scene(repository)
     shot_ids = await _seed_shots(repository, scene_id)
     await engine.plan_shots(scene_id)
-    first = await engine.generate_shot(shot_ids[0], executor_kind_override="mock_executor")
+    first = await engine.generate_shot(shot_ids[0])
     retried = await engine.retry_shot(shot_ids[0])
     assert retried["job_id"] != first["job_id"]  # new job, only this shot
     shot = await repository.get_shot(shot_ids[0])
@@ -127,7 +132,7 @@ async def test_progress_counts_states(env) -> None:
     scene_id, _episode = await _seed_scene(repository)
     shot_ids = await _seed_shots(repository, scene_id)
     await engine.plan_shots(scene_id)
-    await engine.generate_shot(shot_ids[0], executor_kind_override="mock_executor")
+    await engine.generate_shot(shot_ids[0])
     progress = await engine.progress(scene_id)
     assert progress["total"] == 3
     assert progress["states"]["queued"] == 1
@@ -140,6 +145,34 @@ async def test_plan_shots_missing_scene_raises(env) -> None:
 
     with pytest.raises(AnimeNotFoundError):
         await engine.plan_shots("missing")
+
+
+async def test_missing_a800_reports_required_workflow_before_job_write(env) -> None:
+    _factory, repository, job_repository, _service, _engine = env
+    scene_id, _episode = await _seed_scene(repository)
+    await _seed_shots(repository, scene_id)
+
+    def no_a800(_workflow: str) -> str:
+        raise RuntimeError("workflow unavailable")
+
+    blocked = ShotProductionEngine(repository, job_repository, node_selector=no_a800)
+    blocked_service = AnimeApplicationService(
+        repository, job_repository=job_repository, shot_engine=blocked
+    )
+    app = FastAPI()
+    app.include_router(anime_router, prefix="/api")
+    app.dependency_overrides[get_anime_service] = lambda: blocked_service
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(f"/api/anime/scenes/{scene_id}/generate")
+    assert response.status_code == 503
+    assert response.json()["error"] == {
+        "code": "required_workflow_unavailable",
+        "message": "Anime generation requires unavailable workflow 'a800_wan22_t2v_33f'.",
+        "required_workflow": "a800_wan22_t2v_33f",
+    }
+    assert await job_repository.list_jobs() == []
 
 
 @pytest.fixture

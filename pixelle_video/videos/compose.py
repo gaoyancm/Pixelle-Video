@@ -157,10 +157,10 @@ class Composer:
         if frames:
             for frame in frames:
                 duration = float(frame.get("duration", 5))
-                asset_id = frame.get("generated_asset_id")
+                job_id = frame.get("job_id")
                 job_asset = None
-                if asset_id and self.asset_resolver is not None:
-                    job_asset = await self.asset_resolver(asset_id)
+                if job_id and self.asset_resolver is not None:
+                    job_asset = await self.asset_resolver(job_id)
                 if job_asset and Path(job_asset).exists():
                     lines.append(f"file '{job_asset}'")
                     lines.append(f"duration {duration}")

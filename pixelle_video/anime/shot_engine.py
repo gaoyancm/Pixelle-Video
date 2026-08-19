@@ -5,10 +5,20 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from pixelle_video.anime.repository import AnimeRepository
+from pixelle_video.media_assets.repository import AssetRepository
 from pixelle_video.media_jobs.contracts import MediaJobCreate
+from pixelle_video.media_jobs.database import MediaJobsDisabledError
 from pixelle_video.media_jobs.repository import MediaJobRepository
 
 VIDEO_WORKFLOW = "a800_wan22_t2v_33f"
+
+
+class AnimeWorkflowUnavailableError(RuntimeError):
+    """The configured nodes cannot serve the anime production workflow."""
+
+    def __init__(self, workflow_type: str):
+        self.workflow_type = workflow_type
+        super().__init__(f"Anime generation requires unavailable workflow '{workflow_type}'.")
 
 
 class ShotProductionEngine:
@@ -22,12 +32,18 @@ class ShotProductionEngine:
         prompt_compiler: Callable[..., str] | None = None,
         image_prompt_builder: Callable[[dict[str, Any], str], str] | None = None,
         video_prompt_builder: Callable[[dict[str, Any], str], str] | None = None,
+        node_selector: Callable[[str], str] | None = None,
+        asset_repository: AssetRepository | None = None,
+        video_workflow: str = VIDEO_WORKFLOW,
     ):
         self.repository = repository
         self.job_repository = job_repository
         self.prompt_compiler = prompt_compiler
         self.image_prompt_builder = image_prompt_builder or _default_image_prompt
         self.video_prompt_builder = video_prompt_builder or _default_video_prompt
+        self.node_selector = node_selector
+        self.asset_repository = asset_repository
+        self.video_workflow = video_workflow
 
     async def plan_shots(self, scene_id: str) -> list[dict[str, Any]]:
         """Compile per-shot image/video prompts from the shot + scene content."""
@@ -78,20 +94,29 @@ class ShotProductionEngine:
             await self.plan_shots(shot.scene_id)
             shot = await self.repository.get_shot(shot_id)
         executor_kind = executor_kind_override or "private_comfyui"
+        node_id = None
+        if executor_kind == "private_comfyui":
+            if self.node_selector is None:
+                raise MediaJobsDisabledError
+            try:
+                node_id = self.node_selector(self.video_workflow)
+            except RuntimeError:
+                raise AnimeWorkflowUnavailableError(self.video_workflow) from None
         idempotency_key = f"anime-shot:{shot.id}"
         if retry:
             idempotency_key = f"anime-shot:{shot.id}:retry:{_uuid.uuid4().hex[:8]}"
         job = await self.job_repository.create_job(
             MediaJobCreate(
-                workflow_type=VIDEO_WORKFLOW,
+                workflow_type=self.video_workflow,
                 workflow_key="workflow.json",
                 executor_kind=executor_kind,
                 provider=executor_kind,
-                node_id=None,
+                node_id=node_id,
                 input_json={
                     "shot_id": shot.id,
                     "scene_id": shot.scene_id,
                     "role": f"shot_{shot.shot_no}",
+                    "prompt": shot.video_prompt or shot.image_prompt,
                     "image_prompt": shot.image_prompt,
                     "video_prompt": shot.video_prompt,
                 },
@@ -130,6 +155,25 @@ class ShotProductionEngine:
         shots = await self.repository.list_shots(scene_id)
         states = {"pending": 0, "queued": 0, "succeeded": 0, "failed": 0}
         for shot in shots:
+            if shot.status == "queued" and shot.generated_asset_id:
+                job = await self.job_repository.get_job(shot.generated_asset_id)
+                job_status = getattr(job, "status", None) if job else None
+                if job_status == "succeeded":
+                    rows = (
+                        await self.asset_repository.output_assets_for_job(job.job_id)
+                        if self.asset_repository is not None
+                        else []
+                    )
+                    if rows:
+                        shot = await self.repository.update_shot(
+                            shot.id,
+                            status="succeeded",
+                            generated_asset_id=rows[0][1].id,
+                        )
+                    else:
+                        shot = await self.repository.update_shot(shot.id, status="failed")
+                elif job_status in {"failed", "cancelled", "timed_out"} or job is None:
+                    shot = await self.repository.update_shot(shot.id, status="failed")
             states[shot.status if shot.status in states else "pending"] += 1
         return {
             "scene_id": scene_id,

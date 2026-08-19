@@ -5,9 +5,10 @@
   - kling*    → KlingVideoClient (可灵 AI)
 """
 
-import os
 import logging
+import os
 from typing import Optional
+
 from .config import Config
 
 try:
@@ -144,7 +145,7 @@ class VideoClient:
             print("---- VIDEO GENERATION REQUEST ----")
             print(f"Prompt: {prompt}")
             if image_path and str(image_path).startswith("data:"):
-                print(f"Image: [Base64图片]")
+                print("Image: [Base64图片]")
             else:
                 print(f"Image: {image_path}")
             print(f"Model: {model}")

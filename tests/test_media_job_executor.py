@@ -52,6 +52,8 @@ def nodes() -> list[dict]:
             "workflow_types": [
                 "a800_wan22_t2v_33f",
                 "a800_wan22_t2v_81f",
+                "qwen_image_edit",
+                "image_qwen",
             ],
             "enabled": True,
             "timeout_seconds": 10,
@@ -64,6 +66,7 @@ def nodes() -> list[dict]:
             "workflow_types": [
                 "gpu_4090_wan21_i2v_33f",
                 "gpu_4090_wan21_i2v_81f",
+                "sdxl_img2img",
             ],
             "enabled": True,
             "timeout_seconds": 10,
@@ -72,8 +75,28 @@ def nodes() -> list[dict]:
     ]
 
 
+# Explicit machine ownership. `requires_image` alone cannot decide the node:
+# qwen_image_edit (requires_image=True) runs on A800, not the 4090.
+WORKFLOW_NODE: dict[str, str] = {
+    "a800_wan22_t2v_33f": "a800",
+    "a800_wan22_t2v_81f": "a800",
+    "qwen_image_edit": "a800",
+    "image_qwen": "a800",
+    "gpu_4090_wan21_i2v_33f": "gpu-4090",
+    "gpu_4090_wan21_i2v_81f": "gpu-4090",
+    "sdxl_img2img": "gpu-4090",
+}
+
+
 def node_id_for(workflow_type: str) -> str:
-    return "gpu-4090" if WORKFLOW_SPECS[workflow_type].requires_image else "a800"
+    return WORKFLOW_NODE[workflow_type]
+
+
+def test_workflow_node_mapping_is_explicit() -> None:
+    assert set(WORKFLOW_NODE) == set(WORKFLOW_SPECS)
+    assert node_id_for("qwen_image_edit") == "a800"
+    assert node_id_for("image_qwen") == "a800"
+    assert node_id_for("sdxl_img2img") == "gpu-4090"
 
 
 def make_create(
@@ -83,22 +106,29 @@ def make_create(
     deadline_offset: timedelta = timedelta(minutes=5),
 ) -> MediaJobCreate:
     spec = WORKFLOW_SPECS[workflow_type]
+    input_json: dict = {
+        "prompt": f"test {workflow_type}",
+        "negative_prompt": "bad",
+        "seed": 42,
+    }
+    targets = spec.parameter_targets
+    if "width" in targets:
+        input_json["width"] = 512
+    if "height" in targets:
+        input_json["height"] = 512
+    if "frame_count" in targets:
+        input_json["frame_count"] = 81 if workflow_type.endswith("81f") else 33
+    if "steps" in targets:
+        input_json["steps"] = 20
+    if "cfg" in targets:
+        input_json["cfg"] = 6
     return MediaJobCreate(
         workflow_type=workflow_type,
         workflow_key=spec.workflow_key,
         executor_kind="private_comfyui",
         provider="private_comfyui",
         node_id=node_id_for(workflow_type),
-        input_json={
-            "prompt": f"test {workflow_type}",
-            "negative_prompt": "bad",
-            "width": 512,
-            "height": 512,
-            "frame_count": 81 if workflow_type.endswith("81f") else 33,
-            "seed": 42,
-            "steps": 20 if spec.requires_image else None,
-            "cfg": 6 if spec.requires_image else None,
-        },
+        input_json=input_json,
         input_assets_json=(
             [MediaInputAsset(asset_id=asset_id, role="first_frame")]
             if asset_id
@@ -133,10 +163,20 @@ def make_worker(
     worker_id: str = "executor-worker",
     history_poll_interval_seconds: float = 0.001,
 ) -> MediaJobWorker:
+    submitted = False
+
+    async def capacity_aware_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal submitted
+        if request.url.path == "/queue" and not submitted:
+            return httpx.Response(200, json={"queue_running": [], "queue_pending": []})
+        if request.url.path == "/prompt":
+            submitted = True
+        return await handler(request)
+
     adapter = ComfyUIAdapter(
         nodes(),
         workflow_root=WORKFLOW_ROOT,
-        transport=httpx.MockTransport(handler),
+        transport=httpx.MockTransport(capacity_aware_handler),
     )
     executor = RecoverableComfyUIExecutor(
         repository,
@@ -216,9 +256,54 @@ async def test_each_workflow_submits_after_marker_and_persists_valid_output(
         "pixelle_submission_token": job.submission_token
     }
     if WORKFLOW_SPECS[workflow_type].requires_image:
-        assert submitted[0]["prompt"]["52"]["inputs"]["image"] == "inputs/uploaded.jpg"
+        node_id, field = WORKFLOW_SPECS[workflow_type].parameter_targets["input_image"]
+        assert submitted[0]["prompt"][node_id]["inputs"][field] == "inputs/uploaded.jpg"
     else:
-        assert submitted[0]["prompt"]["89"]["inputs"]["text"] == f"test {workflow_type}"
+        node_id, field = WORKFLOW_SPECS[workflow_type].parameter_targets["prompt"]
+        assert submitted[0]["prompt"][node_id]["inputs"][field] == f"test {workflow_type}"
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sdxl_png_output_is_persisted_as_image(tmp_path: Path) -> None:
+    workflow_type = "sdxl_img2img"
+    repository, engine = await open_repository(tmp_path / "sdxl-png.db")
+    job = await create_workflow_job(repository, tmp_path / "assets", workflow_type)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/upload/image":
+            return httpx.Response(200, json={"name": "uploaded.jpg"})
+        if request.url.path == "/prompt":
+            return httpx.Response(200, json={"prompt_id": "sdxl-png"})
+        if request.url.path == "/history/sdxl-png":
+            return httpx.Response(
+                200,
+                json={
+                    "sdxl-png": {
+                        "status": {"status_str": "success", "completed": True},
+                        "outputs": {
+                            "output": {
+                                "images": [
+                                    {
+                                        "filename": "result.png",
+                                        "subfolder": "",
+                                        "type": "output",
+                                    }
+                                ]
+                            }
+                        },
+                    }
+                },
+            )
+        if request.url.path == "/view":
+            return httpx.Response(200, content=b"png-image")
+        return httpx.Response(404)
+
+    await make_worker(repository, tmp_path, handler).run_once()
+    stored = await repository.get_job(job.job_id)
+    assert stored.status == JobStatus.SUCCEEDED.value
+    assert stored.output_metadata[0]["media_type"] == "image"
+    assert stored.output_metadata[0]["relative_path"].endswith("result.png")
     await engine.dispose()
 
 
@@ -380,6 +465,66 @@ async def test_prebound_node_mismatch_fails_before_provider_and_clears_lease(
     await engine.dispose()
 
 
+@pytest.mark.parametrize(
+    "workflow_type",
+    [w for w in WORKFLOW_SPECS if WORKFLOW_SPECS[w].requires_image],
+)
+@pytest.mark.asyncio
+async def test_each_requires_image_workflow_rejects_missing_asset(
+    tmp_path: Path,
+    workflow_type: str,
+) -> None:
+    repository, engine = await open_repository(tmp_path / f"missing-{workflow_type}.db")
+    job = (await repository.create_job(make_create(workflow_type, asset_id=None))).job
+    provider_calls = 0
+
+    async def forbidden_provider(_request: httpx.Request) -> httpx.Response:
+        nonlocal provider_calls
+        provider_calls += 1
+        return httpx.Response(500)
+
+    await make_worker(repository, tmp_path, forbidden_provider).run_once()
+
+    stored = await repository.get_job(job.job_id)
+    assert stored.status == JobStatus.FAILED.value
+    assert stored.error_category == ErrorCategory.VALIDATION.value
+    assert "requires an input asset" in (stored.error_message or "")
+    assert provider_calls == 0
+    await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "workflow_type",
+    [w for w in WORKFLOW_SPECS if WORKFLOW_SPECS[w].requires_image],
+)
+@pytest.mark.asyncio
+async def test_each_requires_image_workflow_rejects_unsafe_asset_path(
+    tmp_path: Path,
+    workflow_type: str,
+) -> None:
+    repository, engine = await open_repository(tmp_path / f"unsafe-asset-{workflow_type}.db")
+    job = (
+        await repository.create_job(
+            make_create(workflow_type, asset_id="../escape.jpg")
+        )
+    ).job
+    provider_calls = 0
+
+    async def forbidden_provider(_request: httpx.Request) -> httpx.Response:
+        nonlocal provider_calls
+        provider_calls += 1
+        return httpx.Response(500)
+
+    await make_worker(repository, tmp_path, forbidden_provider).run_once()
+
+    stored = await repository.get_job(job.job_id)
+    assert stored.status == JobStatus.FAILED.value
+    assert stored.error_category == ErrorCategory.VALIDATION.value
+    assert "input asset" in (stored.error_message or "")
+    assert provider_calls == 0
+    await engine.dispose()
+
+
 @pytest.mark.parametrize("workflow_type", WORKFLOW_TYPES)
 @pytest.mark.asyncio
 async def test_each_workflow_waits_and_resumes_without_second_submission(
@@ -486,7 +631,7 @@ async def test_each_workflow_remote_failure_is_terminal(
 
 @pytest.mark.parametrize("workflow_type", WORKFLOW_TYPES)
 @pytest.mark.asyncio
-async def test_each_workflow_completed_without_output_fails(
+async def test_each_workflow_completed_without_output_retries(
     tmp_path: Path,
     workflow_type: str,
 ) -> None:
@@ -513,8 +658,9 @@ async def test_each_workflow_completed_without_output_fails(
     await make_worker(repository, tmp_path, handler).run_once()
 
     stored = await repository.get_job(job.job_id)
-    assert stored.status == JobStatus.FAILED.value
-    assert stored.error_category == ErrorCategory.OUTPUT_MISSING.value
+    assert stored.status == JobStatus.RUNNING.value
+    assert stored.error_category is None
+    assert stored.next_attempt_at is not None
     await engine.dispose()
 
 
@@ -699,8 +845,12 @@ async def test_heartbeat_runs_during_slow_history_http_call(tmp_path: Path) -> N
     repository, engine = await open_repository(tmp_path / "slow-http.db")
     job = await create_workflow_job(repository, tmp_path / "assets", workflow_type)
 
+    submitted = False
+
     async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal submitted
         if request.url.path == "/prompt":
+            submitted = True
             return httpx.Response(200, json={"prompt_id": "slow-http"})
         if request.url.path == "/history/slow-http":
             before = await repository.get_job(job.job_id)
@@ -709,6 +859,8 @@ async def test_heartbeat_runs_during_slow_history_http_call(tmp_path: Path) -> N
             assert after.version > before.version
             return httpx.Response(200, json={})
         if request.url.path == "/queue":
+            if not submitted:
+                return httpx.Response(200, json={"queue_running": [], "queue_pending": []})
             return httpx.Response(
                 200,
                 json={"queue_running": [[1, "slow-http"]], "queue_pending": []},

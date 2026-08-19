@@ -72,27 +72,37 @@ comfyui:
   # These loopback URLs are placeholders only; do not commit real IPs or credentials.
   nodes:
     - id: a800
-      name: "A800 Wan2.2 T2V"
+      name: "A800 Wan2.2 T2V + Qwen Image"
       base_url: "http://127.0.0.1:18188"
       workflow_types:
         - a800_wan22_t2v_33f
         - a800_wan22_t2v_81f
+        - qwen_image_edit
+        - image_qwen
       enabled: false
       timeout_seconds: 900
       concurrency: 1
     - id: gpu-4090
-      name: "RTX 4090 Wan2.1 I2V"
+      name: "RTX 4090 Wan2.1 I2V + SDXL img2img"
       base_url: "http://127.0.0.1:28188"
       workflow_types:
         - gpu_4090_wan21_i2v_33f
         - gpu_4090_wan21_i2v_81f
+        - sdxl_img2img
       enabled: false
       timeout_seconds: 600
       concurrency: 1
   
   # TTS-specific configuration
   tts:
-    default_workflow: selfhost/tts_edge.json  # TTS workflow to use
+    # Production default: GPU-backed CosyVoice on the configured 4090 ComfyUI.
+    # Switch to "local" only when Edge TTS is explicitly desired.
+    inference_mode: comfyui
+    local:
+      voice: zh-CN-YunjianNeural
+      speed: 1.2
+    comfyui:
+      default_workflow: selfhost/tts_4090_cosyvoice_api.json
   
   # Image-specific configuration
   image:

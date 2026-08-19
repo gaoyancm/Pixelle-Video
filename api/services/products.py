@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,6 +18,10 @@ _HOOK_TEMPLATE = (
     "为产品「{{product}}」编写一条短视频/广告开场 Hook。"
     "核心卖点：{{points}}；目标受众：{{audience}}"
 )
+
+
+class ProductDeliveryNotReadyError(RuntimeError):
+    """The brief cannot be packaged until every required output is durable."""
 
 
 class ProductApplicationService:
@@ -36,11 +41,15 @@ class ProductApplicationService:
         copywriter_agent: Any | None = None,
         plan_repository: Any | None = None,
         brief_mapper: Any | None = None,
+        asset_path_resolver: Callable[[Any], Path] | None = None,
+        require_complete_outputs: bool = True,
     ):
         self.repository = repository
         self.copywriter_agent = copywriter_agent
         self.plan_repository = plan_repository
         self.brief_mapper = brief_mapper
+        self.asset_path_resolver = asset_path_resolver
+        self.require_complete_outputs = require_complete_outputs
         self.ad_engine = ad_engine
         self.asset_repository = asset_repository
         self.job_repository = job_repository
@@ -254,7 +263,7 @@ class ProductApplicationService:
             state = getattr(job, "status", None) if job else None
             if state == "succeeded":
                 statuses["completed"] += 1
-            elif state in {"failed", "canceled"}:
+            elif state in {"failed", "cancelled", "timed_out"}:
                 statuses["failed"] += 1
             else:
                 statuses["running"] += 1
@@ -333,14 +342,130 @@ class ProductApplicationService:
     async def package(self, brief_id: str, platforms: list[str]) -> dict[str, Any]:
         if self.delivery_packager is None:
             raise RuntimeError("delivery packager not configured")
-        # Resolve the brief's production jobs and pick the representative
-        # QC target (the main image job, else the first job).
+        await self._require(brief_id)
+        resolved_assets: dict[str, list[tuple[Any, Any]]] = {}
+        if self.require_complete_outputs:
+            job_ids = await self._brief_job_ids(brief_id)
+            if not job_ids:
+                raise ProductDeliveryNotReadyError("no production jobs exist for this brief")
+            failures = await self._failed_jobs(brief_id)
+            if failures:
+                await self._write_failures(brief_id, failures)
+                raise ProductDeliveryNotReadyError("one or more production jobs failed")
+            incomplete: list[str] = []
+            missing_outputs: list[str] = []
+            for job_id in job_ids:
+                job = await self.job_repository.get_job(job_id) if self.job_repository else None
+                if job is None or getattr(job, "status", None) != "succeeded":
+                    incomplete.append(job_id)
+                    continue
+                if getattr(job, "executor_kind", None) == "llm_caption":
+                    continue
+                rows = (
+                    await self.asset_repository.output_assets_for_job(job_id)
+                    if self.asset_repository is not None
+                    else []
+                )
+                materialized: list[tuple[Any, Any]] = []
+                for relation, asset in rows:
+                    path = self.asset_path_resolver(asset) if self.asset_path_resolver else None
+                    if path is not None:
+                        setattr(asset, "local_path", str(path))
+                        materialized.append((relation, asset))
+                if not materialized:
+                    missing_outputs.append(job_id)
+                else:
+                    resolved_assets[job_id] = materialized
+            if incomplete:
+                raise ProductDeliveryNotReadyError("production jobs are not terminal-success")
+            if missing_outputs:
+                raise ProductDeliveryNotReadyError(
+                    "successful media jobs have no durable output assets"
+                )
+
         qc_job_id = await self._resolve_qc_job(brief_id)
         if qc_job_id is not None:
             self.delivery_packager.qc_job_id = qc_job_id
-        payload = await self.delivery_packager.package(brief_id, platforms)
+        captions = await self._collect_captions(brief_id)
+        if self.require_complete_outputs:
+            for platform in platforms:
+                caption = captions.get(platform)
+                if not caption or caption.get("status") != "succeeded" or not caption.get("text"):
+                    raise ProductDeliveryNotReadyError(
+                        f"successful caption output is missing for platform '{platform}'"
+                    )
+        payload = await self.delivery_packager.package(
+            brief_id,
+            platforms,
+            captions=captions,
+            resolved_assets=resolved_assets,
+        )
         await self.repository.update_status(brief_id, "completed")
         return payload
+
+    async def _collect_captions(self, brief_id: str) -> dict[str, dict[str, Any]]:
+        """Extract real caption text from successful caption job outputs.
+
+        Caption jobs persist their text inline in ``output_metadata`` (via the
+        ``llm_caption`` processor), so no external file path is required.
+        """
+
+        captions: dict[str, dict[str, Any]] = {}
+        for job_id in await self._brief_job_ids(brief_id):
+            job = await self.job_repository.get_job(job_id) if self.job_repository else None
+            if job is None:
+                continue
+            role = ((getattr(job, "input_json", {}) or {}).get("role", "")) or ""
+            if not role.startswith("caption_"):
+                continue
+            platform = role[len("caption_") :]
+            text = None
+            for meta in getattr(job, "output_metadata", None) or []:
+                if meta.get("media_type") == "text" and meta.get("content"):
+                    text = meta["content"]
+                    break
+            captions[platform] = {
+                "text": text,
+                "job_id": job_id,
+                "status": getattr(job, "status", None),
+            }
+        return captions
+
+    async def _failed_jobs(self, brief_id: str) -> list[dict[str, Any]]:
+        """List the brief's terminal-failed jobs so delivery never looks complete."""
+
+        failures: list[dict[str, Any]] = []
+        for job_id in await self._brief_job_ids(brief_id):
+            job = await self.job_repository.get_job(job_id) if self.job_repository else None
+            if job is None:
+                continue
+            state = getattr(job, "status", None)
+            if state in {"failed", "cancelled", "timed_out"}:
+                failures.append(
+                    {
+                        "job_id": job_id,
+                        "role": ((getattr(job, "input_json", {}) or {}).get("role", "")) or "",
+                        "status": state,
+                        "error": getattr(job, "error_message", None),
+                    }
+                )
+        return failures
+
+    async def _write_failures(self, brief_id: str, failures: list[dict[str, Any]]) -> None:
+        brief = await self._require(brief_id)
+        exports_root = (
+            Path(self.delivery_packager.exports_root)
+            if self.delivery_packager
+            else Path("exports")
+        )
+        delivery_root = (
+            exports_root / (brief.project_id or "default-project") / brief_id / "delivery"
+        )
+        delivery_root.mkdir(parents=True, exist_ok=True)
+        (delivery_root / "failures.json").write_text(
+            json.dumps({"failed_jobs": failures}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     async def _resolve_qc_job(self, brief_id: str) -> str | None:
         job_ids = await self._brief_job_ids(brief_id)

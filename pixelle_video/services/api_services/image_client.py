@@ -1,20 +1,19 @@
-import os
-import time
-import uuid
 import logging
+import os
 from typing import List, Optional
+
 from .config import Config
 
 try:
     from .image_dashscope import DashScopeClient
-    from .image_seedream import SeedreamClient
     from .image_gpt import ImageGPT
     from .image_processor import ImageProcessor
+    from .image_seedream import SeedreamClient
 except ImportError:
     from .image_dashscope import DashScopeClient
-    from .image_seedream import SeedreamClient
     from .image_gpt import ImageGPT
     from .image_processor import ImageProcessor
+    from .image_seedream import SeedreamClient
 
 class ImageClient:
     def __init__(self,
@@ -160,7 +159,7 @@ class ImageClient:
                 print(f"Refs: {len(image_paths)}")
                 for p in image_paths:
                     if str(p).startswith("data:"):
-                        print(f" - [Base64图片]")
+                        print(" - [Base64图片]")
                     else:
                         print(f" - {p}")
             print(f"Model: {model}")

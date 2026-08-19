@@ -1,3 +1,4 @@
+import hashlib
 import re
 from pathlib import Path
 
@@ -76,15 +77,34 @@ def test_repeated_alembic_upgrade_head_is_idempotent(tmp_path: Path) -> None:
         engine.dispose()
 
 
+def _db_snapshot(path: Path) -> dict:
+    """Record existence, size, mtime and hash so a migration test can prove
+    it did not touch a pre-existing production database."""
+    if not path.exists():
+        return {"exists": False}
+    stat = path.stat()
+    return {
+        "exists": True,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
 def test_migration_databases_are_created_only_in_pytest_temp_directory(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "location-check.db"
+    prod_db = PROJECT_ROOT / "data" / "media_jobs.db"
+    before = _db_snapshot(prod_db)
+
     command.upgrade(alembic_config(database_path), "head")
 
     assert database_path.exists()
     assert database_path.parent == tmp_path
-    assert not (PROJECT_ROOT / "data" / "media_jobs.db").exists()
+    # A pre-existing production database must be left byte-for-byte untouched;
+    # the migration command must only ever create the temp-path database.
+    assert _db_snapshot(prod_db) == before
 
 
 def _normalized_sql(value: object) -> str:

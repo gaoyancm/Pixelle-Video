@@ -1,5 +1,6 @@
 import os
 from typing import List, Optional
+
 from .config import Config
 
 try:
@@ -42,7 +43,7 @@ class VLM:
                 print(f"Images: {len(image_paths)}")
                 for p in image_paths:
                     if p.startswith("data:"):
-                        print(f" - [Base64图片]")
+                        print(" - [Base64图片]")
                     else:
                         print(f" - {p}")
             if video_paths:

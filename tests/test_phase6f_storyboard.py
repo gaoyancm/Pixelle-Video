@@ -92,7 +92,9 @@ async def test_storyboard_agent_persists_storyboard_json(env) -> None:
     assert stored.status == "storyboarding"
     storyboard = (stored.script_json or {}).get("storyboard")
     assert storyboard is not None
-    assert len(storyboard["scenes"]) == 2
+    assert len(storyboard["frames"]) == 2
+    assert storyboard["frames"][0]["job_id"] is None
+    assert storyboard["frames"][0]["image_prompt"]
 
 
 async def test_storyboard_falls_back_to_engine(env) -> None:

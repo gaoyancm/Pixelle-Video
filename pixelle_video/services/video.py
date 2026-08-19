@@ -34,11 +34,7 @@ from typing import List, Literal, Optional
 import ffmpeg
 from loguru import logger
 
-from pixelle_video.utils.os_util import (
-    get_resource_path,
-    list_resource_files,
-    resource_exists
-)
+from pixelle_video.utils.os_util import get_resource_path, list_resource_files, resource_exists
 
 
 def check_ffmpeg() -> None:
@@ -235,7 +231,7 @@ class VideoService:
             
             # Run command
             import subprocess
-            result = subprocess.run(
+            subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
@@ -413,7 +409,6 @@ class VideoService:
                 fps = fps_num / fps_den if fps_den != 0 else 30
                 
                 # Create black video for padding
-                black_video_path = self._get_unique_temp_path("black_pad", os.path.basename(output))
                 black_input = ffmpeg.input(
                     f'color=c=black:s={width}x{height}:r={fps}',
                     f='lavfi',
@@ -435,7 +430,7 @@ class VideoService:
             audio_stream = audio_stream.filter('apad', whole_dur=target_duration)
         
         if not video_has_audio:
-            logger.info(f"Video has no audio stream, adding audio track")
+            logger.info("Video has no audio stream, adding audio track")
             # Video is silent, just add the audio
             try:
                 (
